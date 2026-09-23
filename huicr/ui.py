@@ -8,6 +8,7 @@ import unicodedata
 
 from .config import HuicrError
 from .git import DiffLine
+from .github import publish, reconcile_publication
 from .herdr import call, identity, repo_for_pane, send
 from .review import Review
 from .theme import Theme
@@ -37,13 +38,14 @@ Comments (durable immediately)
   d  delete comment at cursor  L  all comments + individual send
   R  mark file reviewed        A  choose agent recipient
   s  paste all unsent drafts   S  submit all unsent drafts
-  X  reconcile an uncertain delivery after checking the agent
+  P  post whole-PR drafts to GitHub (file comments in review summary)
+  X  reconcile an uncertain agent delivery / GitHub publication
   In the comment editor: Enter newline, Ctrl+S save, Esc cancel
 
 Comments keep the original commit, trees, side, line range, and snippet.
 Sending keeps the pane open and marks only that version as delivered.
 Editing a sent comment makes its new version pending again.
-No GitHub comments are posted. q closes; comments survive reopening.
+Agent and GitHub delivery are tracked independently. q closes; drafts survive.
 """
 
 
@@ -70,6 +72,17 @@ def detect_target(text):
     if ".." in text or (len(text) >= 7 and all(c in "0123456789abcdefABCDEF" for c in text)):
         return "range"
     return "branch"
+
+
+def comment_status(comment):
+    if comment["resolved"]:
+        return "resolved"
+    status = "agent draft" if comment["version"] > comment["sent_version"] else "agent sent"
+    anchor = comment["anchor"]
+    if anchor.get("pr") and anchor["scope"] == "pr" and not anchor["commit"]:
+        version = comment["github_version"]
+        status += " · GitHub " + ("posted" if version >= comment["version"] else "edited" if version else "draft")
+    return status
 
 
 def editor_layout(text, width, cursor=0):
@@ -158,7 +171,7 @@ class UI:
         self.editor_caret = None
         self.focus = "diff"
         self.navigator = True
-        self.message = "? help · c comment · s paste drafts · S submit drafts"
+        self.message = "? help · c comment · s/S agent · P GitHub"
         self.query = ""
         self.running = True
         self.last_poll = 0
@@ -322,7 +335,7 @@ class UI:
         inline = self.editor
         if not inline and comment:
             inline = {"anchor": comment["anchor"], "text": comment["body"],
-                      "status": "draft" if comment["version"] > comment["sent_version"] else "sent"}
+                      "status": comment_status(comment)}
         inline_height = 0
         if inline and body >= 7:
             wrapped, _ = editor_layout(inline["text"], max(1, content_width - 4), inline.get("cursor", 0))
@@ -363,7 +376,7 @@ class UI:
                 row += inline_height
         hint = "Ctrl+S save · Enter newline · Esc cancel" if self.editor else self.message
         self.put(height - 3, 0, f" {hint}", self.colors.get("comment", 0))
-        self.put(height - 2, 0, " c comment  C file  v select  L comments  s paste  S submit  a blame")
+        self.put(height - 2, 0, " c comment  C file  v select  L comments  s paste  S submit  P GitHub")
         self.put(height - 1, 0, " Tab focus  j/k move  ,/. commits  m whole  r refresh  ? help  q close", self.colors.get("dim", 0))
 
     def modal(self, title, rows, index=0, extra=None):
@@ -560,7 +573,7 @@ class UI:
                 self.store.add(self.repo_key, anchor, body)
             self.selection = None
             self.comments = self.store.comments(self.repo_key)
-            self.message = "Comment saved · s pastes drafts · S submits · keep reviewing"
+            self.message = "Comment saved · s/S sends to agent · P posts whole-PR drafts to GitHub"
 
     def deliver(self, mode, ids=None):
         if not self.origin:
@@ -569,6 +582,15 @@ class UI:
         delivery = send(self.store, self.repo_key, self.origin, mode, ids)
         self.comments = self.store.comments(self.repo_key)
         self.message = f"{'Pasted — press Enter in agent' if mode == 'paste' else 'Submitted'} · batch {delivery[:8]} · review still open"
+
+    def post_to_github(self, ids=None):
+        pr = self.store.comment(ids[0])["anchor"].get("pr") if ids else self.view.pr if self.view else None
+        if not pr:
+            raise HuicrError("Open a GitHub PR (o), switch to its whole diff (m), and add comments to publish.")
+        self.busy("Posting whole-PR comments to GitHub…")
+        url = publish(self.repo, self.store, pr["url"], ids)
+        self.comments = self.store.comments(self.repo_key)
+        self.message = f"GitHub review: {url}"
 
     def choose_agent(self):
         agents = call("agent", "list")["agents"]
@@ -600,10 +622,10 @@ class UI:
             rows = []
             for c in comments:
                 a = c["anchor"]
-                status = "resolved" if c["resolved"] else "draft" if c["version"] > c["sent_version"] else "sent"
-                rows.append(f" {status:8} {a.get('commit', '')[:8] or a['scope']} {a['path']}:{a.get('start') or 'file'}  {c['body']}")
+                status = comment_status(c)
+                rows.append(f" {status}  {a.get('commit', '')[:8] or a['scope']} {a['path']}:{a.get('start') or 'file'}  {c['body']}")
             key, index = self.modal("Saved comments — Enter opens the original captured revision", rows,
-                min(index, len(rows) - 1), " Enter view · e edit · d delete · x resolve/reopen · s paste one · S submit one · Esc back")
+                min(index, len(rows) - 1), " Enter view · e edit · d delete · x resolve · s/S agent · P GitHub · Esc back")
             if key is None:
                 break
             comment = comments[index]
@@ -626,18 +648,32 @@ class UI:
                 self.store.delete(comment["id"])
             elif key in ("s", "S"):
                 self.deliver("paste" if key == "s" else "submit", [comment["id"]])
+            elif key == "P":
+                self.post_to_github([comment["id"]])
         self.comments = self.store.comments(self.repo_key)
 
     def reconcile(self):
+        github = self.store.github_deliveries(self.repo_key, unresolved=True)
         with self.store.lock(f"delivery:{self.repo_key}"):
             deliveries = self.store.deliveries(self.repo_key, unresolved=True)
-            if not deliveries:
+            if not deliveries and not github:
                 self.message = "No uncertain deliveries"
                 return
             for delivery in deliveries:
                 answer = self.prompt(f"Batch {delivery['id'][:8]}: check agent, then type 'sent' or 'retry' (Esc leaves it pending)")
                 if answer in ("sent", "retry"):
                     self.store.finish(delivery["id"], "sent" if answer == "sent" else "failed", "manually reconciled")
+        for delivery in github:
+            self.busy("Checking GitHub for the interrupted review…")
+            url = reconcile_publication(self.repo, self.store, delivery["pr"])
+            if url:
+                self.message = f"GitHub review recovered: {url}"
+                continue
+            self.message = f"No matching review found. Check {delivery['pr']}"
+            answer = self.prompt("After checking the PR, type 'retry' to allow another post (Esc keeps it pending)")
+            if answer == "retry":
+                url = reconcile_publication(self.repo, self.store, delivery["pr"], retry=True)
+                self.message = f"GitHub review recovered: {url}" if url else "Retry enabled. P posts the unpublished whole-PR comments."
         self.comments = self.store.comments(self.repo_key)
 
     def search(self, backwards=False):
@@ -729,6 +765,8 @@ class UI:
             self.store.put(self.repo_key, state_key, not self.store.get(self.repo_key, state_key, False))
         elif key in ("s", "S"):
             self.deliver("paste" if key == "s" else "submit")
+        elif key == "P":
+            self.post_to_github()
         elif key == "A":
             self.choose_agent()
         elif key == "X":

@@ -84,6 +84,8 @@ Environment tokens must be available to the process running huicr. When using th
 
 Authentication is noninteractive inside the review pane. Missing or rejected credentials produce an in-pane error instead of a username/password prompt over the UI.
 
+Publishing reviews also requires permission to comment on the PR. Fine-grained tokens need **Pull requests: write** for that repository, in addition to the read access used to load the review. A classic token with the `repo` scope supports private-repository reviews within your account's access.
+
 ## Review scopes
 
 | Key | Scope | Comparison |
@@ -140,9 +142,23 @@ The invoking agent is captured by pane ID, terminal ID, agent kind, and native s
 
 Each comment stores its ID/version, scope, commit, old/new trees, filename, side, line range, and snippet. Sending marks only the delivered versions; editing a sent comment makes its new version pending. Resolving/deleting locally doesn't retract earlier feedback.
 
-A durable outbox is written **before** transport. A failed/crashed send can have an uncertain outcome because terminal input has no transactional acknowledgement from the agent. Huicr retains the batch and prevents automatic resending. After checking the agent, press `X` and enter `sent` or `retry`. “Sent” means Herdr accepted the input, not that the agent acted on it. Paste-mode feedback is considered delivered once pasted.
+A durable agent outbox is written **before** transport. A failed/crashed send can have an uncertain outcome because terminal input has no transactional acknowledgement from the agent. Huicr retains the batch and prevents automatic resending. After checking the agent, press `X` and enter `sent` or `retry`. “Sent” means Herdr accepted the input, not that the agent acted on it. Paste-mode feedback is considered delivered once pasted.
 
-All feedback is personal and local. Nothing posts review comments to GitHub.
+### Publishing GitHub reviews
+
+1. Open a GitHub PR with `o` and press **`m`** to view its whole diff.
+2. Use `c` / `v` + `c` for line/range comments, or `C` for a file comment. Save with **Ctrl+S**.
+3. Press **`P`** to publish all unpublished, unresolved whole-PR comments for that PR. In **`L`**, `P` publishes only the selected comment, to the PR recorded with it.
+
+Huicr submits a **COMMENT review** at the captured PR head. New-side and old-side line/range comments become native inline review comments. File-level comments appear under filename headings in the review summary; this also supports binary files and files without a text diff. The resulting review URL is shown in the pane and retained with the comments.
+
+The comment list and inline boxes track **agent draft/sent** and **GitHub draft/posted/edited** independently. A comment sent to the agent is still eligible for GitHub, and publishing it keeps it available for agent delivery. Editing a published comment makes the new version eligible for a **new review**. Local edits, resolution, and deletion do not modify previously published GitHub content.
+
+Only comments captured in a **whole-PR** view are eligible. Commit-wise, branch, and worktree comments keep their local/agent workflow. GitHub posting requires PR metadata saved with the comment; older drafts without that metadata can be recreated in a freshly loaded whole-PR view.
+
+Before posting, huicr verifies that the PR is open and its head and base revisions still match each selected comment. It also verifies that each line/range lies in one actual GitHub diff hunk, since GitHub's context can differ from your local `context_lines`. If the PR has changed, refresh with `r` and recreate stale comments against the new whole-PR diff. All selected comments are validated before publication.
+
+GitHub publication has its own durable outbox containing the exact payload and comment versions. Rejected requests retain the drafts for correction and retry. After a timeout or interruption, **`P` or `X` checks GitHub for the existing review**, identified by a hidden batch marker in its summary. A recovered review is marked posted without resubmitting it. If no matching review is found, check the PR yourself, then use **`X` → `retry`** to permit another attempt; `P` performs that attempt. Recovery also works after the PR advances or closes.
 
 ## Agent / CLI usage
 
@@ -164,7 +180,12 @@ Run the checkout's launcher, or install the optional console entrypoint with `pi
 
 # Send specific drafts (omit --id for all pending drafts).
 /path/to/huicr/bin/huicr send --to w1:p1 --mode submit --id COMMENT_ID
+
+# Publish whole-PR drafts to GitHub (omit --id to publish all for this PR).
+/path/to/huicr/bin/huicr publish https://github.com/owner/repo/pull/123 --id COMMENT_ID
 ```
+
+`publish --retry` authorizes another attempt for an uncertain prior publication after you have checked the PR. It still checks for an existing matching review first. `comments --format json` includes each comment's `github_version` and `github_url`; `comments --pending` continues to mean pending **agent** delivery.
 
 `open --focus` takes focus deliberately. GitHub PR links can also be opened through the manifest's Control-click link handler.
 
@@ -201,7 +222,7 @@ sh -n bin/huicr
 
 [GitHub Actions](../.github/workflows/ci.yml) runs on pushes, pull requests, and manual dispatch: Python **3.11 and 3.14** on **Linux and macOS**, plus lint/manifest checks, a package-install smoke test, and **Gitleaks 8.30.1** over the full fetched Git history. The secret scan uses the official versioned CLI container and redacts findings.
 
-Tests use temporary repositories, local Git remotes, and mocked GitHub/Herdr APIs; they need no credentials or running Herdr server. The terminal test uses a real pseudo-terminal to save a multiline comment, enter blame, reopen its saved anchor, and exit.
+Tests use temporary repositories, local Git remotes, and simulated GitHub/Herdr APIs; they need no credentials or running Herdr server. Real pseudo-terminal tests cover multiline editing, blame, saved anchors, and GitHub publication. Publication tests also cover state migration, independent agent/GitHub delivery, stale locations, rejected requests, and recovery after interrupted submissions.
 
 ### Pre-commit secret scanning
 

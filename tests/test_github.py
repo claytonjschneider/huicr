@@ -48,11 +48,12 @@ class GitHubTest(RepositoryFixture):
         index = (self.root / ".git/index").read_bytes()
         checkout = self.repo.head()
         with patch("huicr.github.gh", side_effect=[json.dumps(info), first + "\n" + head + "\n"]):
-            left, right, commits, source = load_pr(self.repo, info["html_url"])
+            left, right, commits, source, pr = load_pr(self.repo, info["html_url"])
         self.assertEqual(left, self.base)
         self.assertEqual(right, head)
         self.assertEqual([c.oid for c in commits], [first, head])
         self.assertIn("target main", source)
+        self.assertEqual(pr, {"url": info["html_url"], "head": head, "base": info["base"]["sha"]})
         self.assertEqual([f.path for f in self.repo.changes(left, right)], ["file.txt"])
         self.assertEqual(self.repo.head(), checkout)
         self.assertEqual((self.root / ".git/index").read_bytes(), index)
@@ -172,7 +173,7 @@ class GitHubTest(RepositoryFixture):
     def check_authenticated_pr(self, mode, host, numbered=False):
         repo, info, fetch_log, prompt_log = self.authenticated_fixture(mode, host)
         config = (repo.root / ".git/config").read_bytes()
-        left, right, commits, _ = load_pr(repo, "7" if numbered else info["html_url"])
+        left, right, commits, _, _ = load_pr(repo, "7" if numbered else info["html_url"])
         self.assertEqual(left, self.base)
         self.assertEqual(right, info["head"]["sha"])
         self.assertEqual(len(commits), 2)

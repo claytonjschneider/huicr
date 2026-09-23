@@ -32,7 +32,7 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA busy_timeout=30000")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1):
+        if version not in (0, 1, 2):
             raise HuicrError(f"Unsupported state schema {version}; upgrade huicr")
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS kv (
@@ -54,8 +54,23 @@ class Store:
                 created REAL NOT NULL, updated REAL NOT NULL
             );
             CREATE INDEX IF NOT EXISTS deliveries_repo ON deliveries(repo);
-            PRAGMA user_version=1;
+            CREATE TABLE IF NOT EXISTS github_deliveries (
+                id TEXT PRIMARY KEY, repo TEXT NOT NULL, pr TEXT NOT NULL,
+                status TEXT NOT NULL, payload TEXT NOT NULL, entries TEXT NOT NULL,
+                result TEXT NOT NULL DEFAULT '{}', error TEXT NOT NULL DEFAULT '',
+                created REAL NOT NULL, updated REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS github_deliveries_repo ON github_deliveries(repo, pr);
         """)
+        if version < 2:
+            with self.db:
+                self.db.execute("BEGIN IMMEDIATE")
+                # Recheck under the write lock: two panes can migrate together.
+                columns = {row[1] for row in self.db.execute("PRAGMA table_info(comments)")}
+                if "github_version" not in columns:
+                    self.db.execute("ALTER TABLE comments ADD COLUMN github_version INTEGER NOT NULL DEFAULT 0")
+                    self.db.execute("ALTER TABLE comments ADD COLUMN github_url TEXT NOT NULL DEFAULT ''")
+                self.db.execute("PRAGMA user_version=2")
 
     def close(self):
         self.db.close()
@@ -162,6 +177,50 @@ class Store:
                     # An edit made while sending remains pending.
                     self.db.execute("UPDATE comments SET sent_version=MAX(sent_version,?) WHERE id=?", (version, comment_id))
             self.db.execute("UPDATE deliveries SET status=?,error=?,updated=? WHERE id=?", (status, error, now(), delivery_id))
+
+    def github_deliveries(self, repo, pr=None, unresolved=False):
+        sql = "SELECT * FROM github_deliveries WHERE repo=?"
+        args = [repo]
+        if pr is not None:
+            sql += " AND pr=?"
+            args.append(pr)
+        if unresolved:
+            sql += " AND status IN ('sending','uncertain')"
+        deliveries = []
+        for row in self.db.execute(sql + " ORDER BY created", args):
+            delivery = dict(row)
+            for key in ("payload", "entries", "result"):
+                delivery[key] = json.loads(delivery[key])
+            deliveries.append(delivery)
+        return deliveries
+
+    def prepare_github(self, repo, pr, comments, payload):
+        # The caller holds the PR's publication lock across the network request.
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            if self.github_deliveries(repo, pr, unresolved=True):
+                raise HuicrError("A GitHub publication has an uncertain outcome. Press P or X to reconcile it.")
+            delivery_id = uid()
+            payload = {**payload, "body": payload["body"] + f"\n\n<!-- huicr-review:{delivery_id} -->"}
+            entries = [(c["id"], c["version"]) for c in comments]
+            self.db.execute("INSERT INTO github_deliveries VALUES (?,?,?,?,?,?,?,?,?,?)", (
+                delivery_id, repo, pr, "sending", json.dumps(payload), json.dumps(entries), "{}", "", now(), now()))
+        return self.github_deliveries(repo, pr, unresolved=True)[0]
+
+    def finish_github(self, delivery_id, status, result=None, error=""):
+        if status not in ("sent", "uncertain", "failed"):
+            raise ValueError(status)
+        with self.db:
+            row = self.db.execute("SELECT * FROM github_deliveries WHERE id=?", (delivery_id,)).fetchone()
+            if not row:
+                raise HuicrError("Unknown GitHub publication")
+            result = result or {}
+            if status == "sent":
+                for comment_id, version in json.loads(row["entries"]):
+                    self.db.execute("""UPDATE comments SET github_version=?,github_url=?
+                        WHERE id=? AND github_version<=?""", (version, result["html_url"], comment_id, version))
+            self.db.execute("UPDATE github_deliveries SET status=?,result=?,error=?,updated=? WHERE id=?",
+                            (status, json.dumps(result), error, now(), delivery_id))
 
 
 def format_comments(comments, repo):

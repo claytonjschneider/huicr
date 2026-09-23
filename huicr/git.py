@@ -47,6 +47,7 @@ class View:
     commit: str = ""
     source: str = ""
     files: list[FileChange] = field(default_factory=list)
+    pr: dict | None = None
 
     @property
     def key(self):

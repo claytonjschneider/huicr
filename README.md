@@ -2,7 +2,7 @@
 
 A personal code-review pane for [Herdr](https://herdr.dev), pronounced like **weaker**.
 
-Review changes commit-by-commit, toggle blame, and send persistent line/file comments back to your agent while you keep reviewing.
+Review changes commit-by-commit, toggle blame, and send persistent line/file comments to your agent or publish a GitHub PR review.
 
 ## Install
 
@@ -47,7 +47,13 @@ Branch, range, and PR reviews start commit-wise, using each commit's actual pare
 3. **Ctrl+S** saves, **Enter** adds a newline, **Esc** cancels.
 4. **`s` pastes** unsent comments into the agent's input; **`S` submits** them immediately.
 
-The review stays open. Comments survive closing and retain their original commit, file, and snippet. Use `L` to browse/edit/send individual comments, or `A` to choose an agent. Feedback is local—not posted to GitHub.
+The review stays open. Comments survive closing and retain their original commit, file, and snippet. Use `L` to browse/edit/send individual comments, or `A` to choose an agent.
+
+## Post to GitHub
+
+Open a PR with `o`, press **`m` for the whole-PR diff**, and add comments. **`P` publishes** unpublished whole-PR drafts as a GitHub review; `L` → `P` publishes just the selected comment. Line/range comments are inline, and file comments appear under their filenames in the review summary.
+
+GitHub and agent delivery have separate statuses. Posting reuses your `gh` credentials with permission to write PR reviews. See [publication details and recovery](docs/reference.md#publishing-github-reviews).
 
 ## More
 

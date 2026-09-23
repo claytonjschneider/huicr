@@ -15,6 +15,7 @@ class Review:
         self.whole = False
         self.left = self.right = ""
         self.source = ""
+        self.pr = None
         self.view = None
 
     def load(self):
@@ -62,7 +63,7 @@ class Review:
                 self.source = self.target
             elif not self.right:
                 from .github import load_pr
-                self.left, self.right, self.commits, self.source = load_pr(repo, self.target)
+                self.left, self.right, self.commits, self.source, self.pr = load_pr(repo, self.target)
             self.commit_index = min(self.commit_index, max(0, len(self.commits) - 1))
             self.select_view()
         else:
@@ -76,13 +77,14 @@ class Review:
             self.view = self.repo.view(self.scope, f"whole {self.scope}: {self.source}", self.left, self.right,
                                        left_commit=self.left if self.commits and self.commits[0].parents else "",
                                        right_commit=self.right, source=self.source)
+        self.view.pr = self.pr
         return self.view
 
     def anchor(self, file, lines, start=None, end=None, side=None):
         v = self.view
         anchor = {k: getattr(v, k) for k in ("scope", "label", "left", "right", "left_commit", "right_commit", "commit", "source")}
         anchor.update(view=v.key, path=file.path, old_path=file.old_path, status=file.status,
-                      side="file", start=None, end=None, snippet="")
+                      side="file", start=None, end=None, snippet="", pr=v.pr)
         if start is not None:
             if not 0 <= start < len(lines):
                 raise HuicrError("Select a code line, or use C for a file comment")
@@ -98,5 +100,6 @@ class Review:
 
     def restore_anchor(self, anchor):
         self.view = View(**{k: anchor[k] for k in ("scope", "label", "left", "right", "left_commit", "right_commit", "commit", "source")})
+        self.view.pr = anchor.get("pr")
         self.view.files = self.repo.changes(self.view.left, self.view.right)
         return self.view

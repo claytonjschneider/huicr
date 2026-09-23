@@ -1,5 +1,6 @@
 import errno
 import fcntl
+import json
 import os
 from pathlib import Path
 import pty
@@ -8,22 +9,23 @@ import struct
 import subprocess
 import sys
 import termios
+import textwrap
 import time
 
 from test_review import RepositoryFixture
 
 
 class TerminalTest(RepositoryFixture):
-    def test_interactive_comment_save_blame_and_reopen(self):
-        self.write("file.txt", "review this line\nsecond\nthird\n")
+    def start_ui(self, *args, extra_env=None):
         master, slave = pty.openpty()
         self.addCleanup(os.close, master)
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 35, 110, 0, 0))
         env = {k: v for k, v in os.environ.items() if not k.startswith(("HERDR_", "HUICR_"))}
         env.update(TERM="xterm-256color", HUICR_STATE_DIR=str(self.store.directory),
                    HERDR_PLUGIN_CONFIG_DIR=str(Path(self.temp.name) / "no-config"))
+        env.update(extra_env or {})
         executable = Path(__file__).resolve().parents[1] / "bin/huicr.py"
-        process = subprocess.Popen([sys.executable, str(executable), "review", "--repo", str(self.root)],
+        process = subprocess.Popen([sys.executable, str(executable), "review", "--repo", str(self.root), *args],
                                    env=env, stdin=slave, stdout=slave, stderr=slave)
         os.close(slave)
         def stop():
@@ -54,6 +56,11 @@ class TerminalTest(RepositoryFixture):
                     return
             self.fail(f"UI did not reach expected state; exit={process.poll()} output={output[-3000:]!r}")
 
+        return master, process, output, wait_for
+
+    def test_interactive_comment_save_blame_and_reopen(self):
+        self.write("file.txt", "review this line\nsecond\nthird\n")
+        master, process, output, wait_for = self.start_ui()
         wait_for(lambda: b"review this line" in output)
         os.write(master, b"C")
         wait_for(lambda: b"Enter newline" in output)
@@ -82,3 +89,72 @@ class TerminalTest(RepositoryFixture):
         wait_for(lambda: process.poll() is not None)
         self.assertEqual(process.returncode, 0)
         self.assertEqual(self.store.comments(str(self.root))[0]["body"], comments[0]["body"])
+
+    def test_publish_pr_from_terminal_and_cli_with_simulated_github(self):
+        self.write("file.txt", "review this PR line\nsecond\nthird\n")
+        head = self.commit("PR change")
+        url = "https://github.com/example/demo/pull/7"
+        info = {"state": "open", "merged": False, "html_url": url, "title": "Example PR", "commits": 1,
+                "head": {"sha": head}, "base": {"sha": self.base, "ref": "main"}}
+        remote = Path(self.temp.name) / "remote.git"
+        self.git("clone", "--bare", str(self.root), str(remote))
+        self.git("update-ref", "refs/pull/7/head", head, cwd=remote)
+        self.git("config", f"url.{remote}.insteadOf", "https://github.com/example/demo.git")
+        tools = Path(self.temp.name) / "tools"
+        tools.mkdir()
+        gh = tools / "gh"
+        gh.write_text(f"#!{sys.executable}\n" + textwrap.dedent("""
+            import json
+            import os
+            from pathlib import Path
+            import sys
+
+            assert os.environ.get("GH_PROMPT_DISABLED") == "1"
+            args = sys.argv[1:]
+            info = json.loads(os.environ["HUICR_TEST_PR"])
+            if "--method" in args:
+                assert args[args.index("--method") + 1] == "POST"
+                payload = json.load(sys.stdin)
+                path = Path(os.environ["HUICR_TEST_POSTS"])
+                posts = json.loads(path.read_text()) if path.exists() else []
+                posts.append(payload)
+                path.write_text(json.dumps(posts))
+                print(json.dumps({"id": len(posts), "state": "COMMENTED", "commit_id": payload["commit_id"],
+                                  "body": payload["body"], "html_url": info["html_url"] + "#pullrequestreview-1"}))
+            elif "--jq" in args:
+                print(info["head"]["sha"])
+            elif "--slurp" in args:
+                print(os.environ["HUICR_TEST_FILES"])
+            else:
+                print(json.dumps(info))
+        """))
+        gh.chmod(0o755)
+        posts = Path(self.temp.name) / "posted-reviews.json"
+        environment = {"PATH": str(tools) + os.pathsep + os.environ.get("PATH", ""),
+                       "HUICR_TEST_PR": json.dumps(info), "HUICR_TEST_POSTS": str(posts),
+                       "HUICR_TEST_FILES": json.dumps([[{"filename": "file.txt", "patch": self.repo.text("diff", self.base, head)}]])}
+        master, process, output, wait_for = self.start_ui(url, "--whole", extra_env=environment)
+        wait_for(lambda: b"review this PR line" in output)
+        os.write(master, b"C")
+        wait_for(lambda: b"Enter newline" in output)
+        os.write(master, b"Please review this file\x13")
+        wait_for(lambda: bool(self.store.comments(str(self.root))))
+        os.write(master, b"P")
+        wait_for(lambda: b"GitHub review:" in output)
+        comment = self.store.comments(str(self.root))[0]
+        self.assertEqual((comment["github_version"], comment["sent_version"]), (1, 0))
+        self.assertIn("Please review this file", json.loads(posts.read_text())[0]["body"])
+        os.write(master, b"q")
+        wait_for(lambda: process.poll() is not None)
+        self.assertEqual(process.returncode, 0)
+
+        self.store.edit(comment["id"], "Updated file feedback")
+        environment.update(HUICR_STATE_DIR=str(self.store.directory),
+                           HERDR_PLUGIN_CONFIG_DIR=str(Path(self.temp.name) / "no-config"))
+        executable = Path(__file__).resolve().parents[1] / "bin/huicr.py"
+        result = subprocess.run([sys.executable, str(executable), "publish", url, "--repo", str(self.root), "--id", comment["id"]],
+                                env={**os.environ, **environment}, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertIn(url, result.stdout.decode())
+        self.assertEqual(self.store.comment(comment["id"])["github_version"], 2)
+        self.assertEqual(len(json.loads(posts.read_text())), 2)

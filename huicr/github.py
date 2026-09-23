@@ -2,7 +2,7 @@
 
 import json
 import re
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from .config import HuicrError
 from .git import parse_patch
@@ -121,8 +121,7 @@ def api(host, endpoint, *, data=None, paginate=False):
 
 def publishable(comment, url):
     anchor = comment["anchor"]
-    return (anchor["scope"] == "pr" and not anchor["commit"]
-            and (anchor.get("pr") or {}).get("url") == url)
+    return anchor["scope"] == "pr" and (anchor.get("pr") or {}).get("url") == url
 
 
 def pending_review_comments(store, repo, url, ids=None):
@@ -130,50 +129,127 @@ def pending_review_comments(store, repo, url, ids=None):
     if ids is not None:
         chosen = [c for c in comments if c["id"] in ids]
         if {c["id"] for c in chosen} != set(ids) or any(not publishable(c, url) for c in chosen):
-            raise HuicrError("Select unresolved comments saved from this PR's whole diff (m) to post to GitHub.")
+            raise HuicrError("Select unresolved comments saved from this PR to post to GitHub.")
         comments = chosen
     comments = [c for c in comments if publishable(c, url) and c["version"] > c["github_version"]]
     if not comments:
-        raise HuicrError("No unpublished whole-PR comments. Press m, then add comments for GitHub.")
+        raise HuicrError("No unpublished PR comments. Add comments in a PR review to publish to GitHub.")
     return comments
 
 
-def review_payload(comments, info, files):
+def mapped_range(repo, anchor, target, cache):
+    """Map an unchanged range between revisions, including file renames."""
+    old_side = anchor["side"] == "old"
+    source = anchor["left_commit"] if old_side else anchor["right_commit"]
+    path = anchor["old_path"] if old_side else anchor["path"]
+    start, end = anchor["start"], anchor["end"]
+    if not source:
+        return None
+    if source == target:
+        return path, start, end
+    key = (source, target)
+    if key not in cache:
+        cache[key] = repo.changes(source, target)
+    change = next((c for c in cache[key] if c.old_path == path), None)
+    if change and change.status.startswith("D"):
+        return None
+    mapped_path = change.path if change and change.status.startswith("R") else path
+    key = (source, target, path, mapped_path)
+    if key not in cache:
+        cache[key] = repo.text("diff", "--no-ext-diff", "--no-textconv", "--no-color", "--unified=0",
+                               "--find-renames", source, target, "--", path, mapped_path)
+    shift = 0
+    for match in re.finditer(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", cache[key], re.MULTILINE):
+        old, old_count, _, new_count = (int(value) if value is not None else 1 for value in match.groups())
+        if old_count:
+            last = old + old_count - 1
+            if old <= end and last >= start:
+                return None  # Some of the reviewed text was replaced/deleted.
+            if last < start:
+                shift += new_count - old_count
+        else:
+            if start <= old < end:
+                return None  # An insertion split the reviewed range.
+            if old < start:
+                shift += new_count
+    return mapped_path, start + shift, end + shift
+
+
+def in_diff_hunk(file, side, start, end):
+    hunk = 0
+    locations = {}
+    for line in parse_patch(file.get("patch") or ""):
+        if line.kind == "hunk":
+            hunk += 1
+        number = line.old if side == "LEFT" else line.new
+        if number is not None:
+            locations[number] = hunk
+    return start in locations and locations[start] == locations.get(end)
+
+
+def summary_comment(comment):
+    anchor = comment["anchor"]
+    path = anchor["old_path"] if anchor["side"] == "old" else anchor["path"]
+    location = path if anchor["side"] == "file" else f"{path}:{anchor['start']}-{anchor['end']}"
+    fence = "`" * (1 + max((len(m) for m in re.findall(r"`+", location)), default=0))
+    parts = [f"### {fence}{location}{fence}", comment["body"]]
+    if anchor["commit"]:
+        root = anchor["pr"]["url"].rsplit("/pull/", 1)[0]
+        parts.append(f"Reviewed at [`{anchor['commit'][:10]}`]({root}/commit/{anchor['commit']}).")
+        if anchor["side"] != "file":
+            revision = anchor["left_commit"] if anchor["side"] == "old" else anchor["right_commit"]
+            link = f"{root}/blob/{revision}/{quote(path, safe='/')}#L{anchor['start']}-L{anchor['end']}"
+            parts.append(f"[Original {anchor['side']}-side location]({link}); no unchanged inline location in the PR diff.")
+            fence = "`" * max(3, 1 + max((len(m) for m in re.findall(r"`+", anchor["snippet"])), default=0))
+            parts.append(f"{fence}diff\n{anchor['snippet']}\n{fence}")
+    return "\n\n".join(parts)
+
+
+def review_payload(repo, comments, info, files):
     if info["state"] != "open" or info.get("merged"):
         raise HuicrError("GitHub publication requires an open PR.")
     files = {file["filename"]: file for file in files}
     inline = []
     summary = ["Review comments from huicr."]
+    cache = {}
+    fork = None
     for comment in comments:
         anchor = comment["anchor"]
         pr = anchor["pr"]
         if (pr["head"] != info["head"]["sha"] or pr["base"] != info["base"]["sha"]
-                or anchor["right_commit"] != pr["head"]):
-            raise HuicrError("PR revisions changed. Refresh (r), then recreate stale comments in the whole-PR diff (m).")
+                or anchor["right_commit"] != (anchor["commit"] or pr["head"])):
+            raise HuicrError("PR revisions changed. Refresh (r), then recreate stale comments against the current PR.")
         path = anchor["path"]
-        if path not in files:
+        if path not in files and not anchor["commit"]:
             raise HuicrError(f"{path} is absent from GitHub's PR diff; refresh and review its current location.")
         if anchor["side"] == "file":
-            fence = "`" * (1 + max((len(m) for m in re.findall(r"`+", path)), default=0))
-            summary.append(f"### {fence}{path}{fence}\n\n{comment['body']}")
+            summary.append(summary_comment(comment))
             continue
         side = {"old": "LEFT", "new": "RIGHT"}.get(anchor["side"])
         start, end = anchor["start"], anchor["end"]
         if not side or not isinstance(start, int) or not isinstance(end, int) or not 0 < start <= end:
             raise HuicrError(f"Invalid GitHub comment range for {path}")
+        body = comment["body"]
+        if anchor["commit"]:
+            if side == "LEFT" and fork is None:
+                fork = repo.merge_base(info["base"]["sha"], info["head"]["sha"])
+            mapped = mapped_range(repo, anchor, fork if side == "LEFT" else info["head"]["sha"], cache)
+            if mapped:
+                path, start, end = mapped
+                if side == "LEFT":
+                    file = next((f for f in files.values() if f.get("status") != "added"
+                                 and f.get("previous_filename", f["filename"]) == path), None)
+                    path = file["filename"] if file else path
+            if not mapped or path not in files or not in_diff_hunk(files[path], side, start, end):
+                summary.append(summary_comment(comment))
+                continue
+            root = pr["url"].rsplit("/pull/", 1)[0]
+            body += f"\n\n_Reviewed at [`{anchor['commit'][:10]}`]({root}/commit/{anchor['commit']})._"
         # GitHub's context can differ from the configured local diff. Both ends
         # must exist on the selected side of one actual GitHub diff hunk.
-        hunk = 0
-        locations = {}
-        for line in parse_patch(files[path].get("patch") or ""):
-            if line.kind == "hunk":
-                hunk += 1
-            number = line.old if side == "LEFT" else line.new
-            if number is not None:
-                locations[number] = hunk
-        if start not in locations or locations[start] != locations.get(end):
+        elif not in_diff_hunk(files[path], side, start, end):
             raise HuicrError(f"{path}:{start}-{end} is outside one GitHub diff hunk. Select a changed line or add a file comment.")
-        item = {"path": path, "body": comment["body"], "side": side, "line": end}
+        item = {"path": path, "body": body, "side": side, "line": end}
         if start != end:
             item.update(start_line=start, start_side=side)
         inline.append(item)
@@ -234,7 +310,7 @@ def publish(repo, store, target, ids=None, *, retry=False):
         comments = pending_review_comments(store, key, url, ids)
         info = api(host, endpoint)
         files = api(host, f"{endpoint}/files?per_page=100", paginate=True)
-        payload = review_payload(comments, info, files)
+        payload = review_payload(repo, comments, info, files)
         delivery = store.prepare_github(key, url, comments, payload)
         try:
             response = api(host, f"{endpoint}/reviews", data=delivery["payload"])

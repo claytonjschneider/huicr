@@ -52,7 +52,7 @@ The review stays open. Comments survive closing and retain their original commit
 
 ## Post to GitHub
 
-Open a PR with `o`, press **`m` for the whole-PR diff**, and add comments. **`P` publishes** unpublished whole-PR drafts as a GitHub review; `L` → `P` publishes just the selected comment. Line/range comments are inline, and file comments appear under their filenames in the review summary.
+Open a PR with `o` and add comments as you step through commits with `,` / `.` or view the whole diff with `m`. **`P` publishes** unpublished PR drafts as a GitHub review; `L` → `P` publishes just the selected comment. Unchanged line/range locations are mapped to inline comments. File comments and historical lines that no longer map appear in the review summary with their original context.
 
 GitHub and agent delivery have separate statuses. Posting reuses your `gh` credentials with permission to write PR reviews. See [publication details and recovery](docs/reference.md#publishing-github-reviews).
 

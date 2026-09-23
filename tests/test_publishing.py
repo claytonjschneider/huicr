@@ -74,6 +74,23 @@ class PublicationTest(RepositoryFixture):
     def deliveries(self):
         return self.store.github_deliveries(str(self.root))
 
+    def capture_commit(self, oid):
+        self.head = self.repo.head()
+        self.info["head"]["sha"] = self.head
+        self.current.right = self.head
+        self.current.pr = {"url": self.url, "head": self.head, "base": self.base}
+        self.current.commits = self.repo.commits(self.base, self.head)
+        self.current.commit_index = next(i for i, commit in enumerate(self.current.commits) if commit.oid == oid)
+        self.current.whole = False
+        self.current.select_view()
+        self.files = []
+        for file in self.repo.changes(self.base, self.head):
+            item = {"filename": file.path, "status": {"A": "added", "D": "removed", "R": "renamed"}.get(file.status[0], "modified"),
+                    "patch": self.repo.text("diff", "--find-renames", self.base, self.head, "--", file.old_path, file.path)}
+            if file.status.startswith("R"):
+                item["previous_filename"] = file.old_path
+            self.files.append(item)
+
     def test_posts_inline_ranges_and_file_summary_independently_of_agent_delivery(self):
         right = self.comment("A single new line")
         left = self.comment("An old-side range", side="old", end=2)
@@ -116,18 +133,132 @@ class PublicationTest(RepositoryFixture):
         self.current.select_view()
         foreign = self.comment("Different PR")
         self.current.pr = {**self.current.pr, "url": self.url}
+        self.current.scope = "branch"
         self.current.whole = False
         self.current.select_view()
-        commit = self.comment("Commit-wise feedback")
+        branch = self.comment("Local branch feedback")
         self.post([selected])
         self.assertEqual([c["body"] for c in self.requests[-1][1]["comments"]], ["Selected"])
-        for cid in (other, foreign, commit):
+        for cid in (other, foreign, branch):
             self.assertEqual(self.store.comment(cid)["github_version"], 0)
         before = len(self.requests)
-        for cid in (foreign, commit, "missing-id"):
-            with self.subTest(comment=cid), self.assertRaisesRegex(HuicrError, "whole diff"):
+        for cid in (foreign, branch, "missing-id"):
+            with self.subTest(comment=cid), self.assertRaisesRegex(HuicrError, "saved from this PR"):
                 self.post([cid])
         self.assertEqual(len(self.requests), before)
+
+    def test_commit_wise_ranges_follow_later_insertions_and_mix_with_whole_pr_comments(self):
+        first = self.head
+        self.write("file.txt", "prefix\nupdated first\nupdated second\nthird\n")
+        self.commit("Insert before the reviewed lines")
+        self.capture_commit(first)
+        cid = self.comment("Both original lines", end=2)
+        self.current.whole = True
+        self.current.select_view()
+        self.comment("Whole PR feedback")
+        self.post()
+        comments = self.requests[-1][1]["comments"]
+        self.assertEqual(len(comments), 2)
+        self.assertEqual((comments[0]["start_line"], comments[0]["line"], comments[0]["side"]), (2, 3, "RIGHT"))
+        self.assertIn(first, comments[0]["body"])
+        self.assertEqual(comments[1]["body"], "Whole PR feedback")
+        self.assertEqual(self.store.comment(cid)["anchor"]["start"], 1)
+        self.assertIn("GitHub posted", comment_status(self.store.comment(cid)))
+
+    def test_commit_wise_old_side_maps_the_actual_parent_back_to_the_pr_base(self):
+        self.write("file.txt", "prefix\nfirst\nsecond\nthird\n")
+        self.commit("Earlier PR commit inserted a line")
+        self.write("file.txt", "prefix\nfirst\nthird\n")
+        selected = self.commit("Delete second")
+        self.capture_commit(selected)
+        self.comment("Why remove second?", side="old", start=3)
+        self.post()
+        comment = self.requests[-1][1]["comments"][0]
+        self.assertEqual((comment["path"], comment["line"], comment["side"]), ("file.txt", 2, "LEFT"))
+        self.assertIn(selected, comment["body"])
+
+    def test_commit_wise_locations_follow_file_renames(self):
+        first = self.head
+        self.git("mv", "file.txt", "renamed π file.txt")
+        self.commit("Rename after the reviewed commit")
+        self.capture_commit(first)
+        self.comment("Feedback before rename")
+        self.post()
+        comment = self.requests[-1][1]["comments"][0]
+        self.assertEqual((comment["path"], comment["line"], comment["side"]), ("renamed π file.txt", 1, "RIGHT"))
+
+    def test_old_side_mapping_uses_githubs_current_filename_after_an_earlier_rename(self):
+        self.write("file.txt", "first\nsecond\nthird\n")
+        self.git("mv", "file.txt", "renamed.txt")
+        self.commit("Rename before the reviewed deletion")
+        self.write("renamed.txt", "first\nthird\n")
+        selected = self.commit("Delete from the renamed file")
+        self.capture_commit(selected)
+        self.comment("Deletion after rename", side="old", start=2)
+        self.post()
+        comment = self.requests[-1][1]["comments"][0]
+        self.assertEqual((comment["path"], comment["line"], comment["side"]), ("renamed.txt", 2, "LEFT"))
+
+    def test_rewritten_or_removed_commit_lines_publish_the_original_context(self):
+        first = self.head
+        for text in ("rewritten\nupdated second\nthird\n", "updated second\nthird\n"):
+            with self.subTest(text=text):
+                self.write("file.txt", text)
+                self.commit("Change the reviewed line")
+                self.capture_commit(first)
+                cid = self.comment("Feedback on the original line")
+                self.post([cid])
+                payload = self.requests[-1][1]
+                self.assertNotIn("comments", payload)
+                self.assertIn("Feedback on the original line", payload["body"])
+                self.assertIn("+updated first", payload["body"])
+                self.assertIn(f"/blob/{first}/file.txt#L1-L1", payload["body"])
+                self.assertEqual(self.store.comment(cid)["github_version"], 1)
+
+    def test_insertion_inside_a_commit_range_keeps_the_original_range_in_the_summary(self):
+        first = self.head
+        self.write("file.txt", "updated first\ninserted between\nupdated second\nthird\n")
+        self.commit("Split the reviewed range")
+        self.capture_commit(first)
+        self.comment("Review the original pair", end=2)
+        self.post()
+        payload = self.requests[-1][1]
+        self.assertNotIn("comments", payload)
+        self.assertIn("+updated first\n+updated second", payload["body"])
+        self.assertNotIn("inserted between", payload["body"])
+
+    def test_a_line_added_then_deleted_within_the_pr_retains_its_original_old_side(self):
+        first = self.head
+        self.write("file.txt", "updated second\nthird\n")
+        selected = self.commit("Remove a line introduced earlier in the PR")
+        self.capture_commit(selected)
+        self.comment("This removal needs explanation", side="old")
+        self.post()
+        payload = self.requests[-1][1]
+        self.assertNotIn("comments", payload)
+        self.assertIn(f"/blob/{first}/file.txt#L1-L1", payload["body"])
+        self.assertIn("-updated first", payload["body"])
+
+    def test_commit_file_comments_survive_a_file_disappearing_from_the_whole_pr(self):
+        self.write("temporary.txt", "temporary implementation\n")
+        selected = self.commit("Add an intermediate file")
+        self.git("rm", "temporary.txt")
+        self.commit("Remove the intermediate file")
+        self.capture_commit(selected)
+        cid = self.comment("Feedback on this intermediate approach", side="file")
+        self.post()
+        body = self.requests[-1][1]["body"]
+        self.assertIn("### `temporary.txt`", body)
+        self.assertIn(selected, body)
+        self.assertEqual(self.store.comment(cid)["github_version"], 1)
+
+    def test_commit_comments_outside_github_context_are_published_as_contextual_feedback(self):
+        self.capture_commit(self.head)
+        self.files[0]["patch"] = ""
+        self.comment("Feedback despite omitted GitHub context")
+        self.post()
+        self.assertIn("+updated first", self.requests[-1][1]["body"])
+        self.assertNotIn("comments", self.requests[-1][1])
 
     def test_stale_head_or_base_is_rejected_before_any_publication(self):
         self.comment()

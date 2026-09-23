@@ -155,7 +155,7 @@ class TerminalTest(RepositoryFixture):
         environment = {"PATH": str(tools) + os.pathsep + os.environ.get("PATH", ""),
                        "HUICR_TEST_PR": json.dumps(info), "HUICR_TEST_POSTS": str(posts),
                        "HUICR_TEST_FILES": json.dumps([[{"filename": "file.txt", "patch": self.repo.text("diff", self.base, head)}]])}
-        master, process, output, wait_for = self.start_ui(url, "--whole", extra_env=environment)
+        master, process, output, wait_for = self.start_ui(url, extra_env=environment)
         wait_for(lambda: b"review this PR line" in output)
         os.write(master, b"C")
         wait_for(lambda: b"Enter newline" in output)

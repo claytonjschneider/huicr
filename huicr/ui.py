@@ -39,7 +39,7 @@ Comments (durable immediately)
   d  delete comment at cursor  L  all comments + individual send
   R  mark file reviewed        A  choose agent recipient
   s  paste all unsent drafts   S  submit all unsent drafts
-  P  post whole-PR drafts to GitHub (file comments in review summary)
+  P  post PR drafts to GitHub (commit-wise or whole-PR)
   X  reconcile an uncertain agent delivery / GitHub publication
   In the comment editor: Enter newline, Ctrl+S save, Esc cancel
 
@@ -136,7 +136,7 @@ def comment_status(comment):
         return "resolved"
     status = "agent draft" if comment["version"] > comment["sent_version"] else "agent sent"
     anchor = comment["anchor"]
-    if anchor.get("pr") and anchor["scope"] == "pr" and not anchor["commit"]:
+    if anchor.get("pr") and anchor["scope"] == "pr":
         version = comment["github_version"]
         status += " · GitHub " + ("posted" if version >= comment["version"] else "edited" if version else "draft")
     return status
@@ -656,7 +656,7 @@ class UI:
                 self.store.add(self.repo_key, anchor, body)
             self.selection = None
             self.comments = self.store.comments(self.repo_key)
-            self.message = "Comment saved · s/S sends to agent · P posts whole-PR drafts to GitHub"
+            self.message = "Comment saved · s/S sends to agent · P posts PR drafts to GitHub"
 
     def deliver(self, mode, ids=None):
         if not self.origin:
@@ -669,8 +669,8 @@ class UI:
     def post_to_github(self, ids=None):
         pr = self.store.comment(ids[0])["anchor"].get("pr") if ids else self.view.pr if self.view else None
         if not pr:
-            raise HuicrError("Open a GitHub PR (o), switch to its whole diff (m), and add comments to publish.")
-        self.busy("Posting whole-PR comments to GitHub…")
+            raise HuicrError("Open a GitHub PR (o) and add comments to publish.")
+        self.busy("Posting PR comments to GitHub…")
         url = publish(self.repo, self.store, pr["url"], ids)
         self.comments = self.store.comments(self.repo_key)
         self.message = f"GitHub review: {url}"
@@ -756,7 +756,7 @@ class UI:
             answer = self.prompt("After checking the PR, type 'retry' to allow another post (Esc keeps it pending)")
             if answer == "retry":
                 url = reconcile_publication(self.repo, self.store, delivery["pr"], retry=True)
-                self.message = f"GitHub review recovered: {url}" if url else "Retry enabled. P posts the unpublished whole-PR comments."
+                self.message = f"GitHub review recovered: {url}" if url else "Retry enabled. P posts the unpublished PR comments."
         self.comments = self.store.comments(self.repo_key)
 
     def search(self, backwards=False):

@@ -149,17 +149,19 @@ A durable agent outbox is written **before** transport. A failed/crashed send ca
 
 ### Publishing GitHub reviews
 
-1. Open a GitHub PR with `o` and press **`m`** to view its whole diff.
+1. Open a GitHub PR with `o`. Review commit-wise with **`,` / `.`**, or use **`m`** for the whole diff.
 2. Use `c` / `v` + `c` for line/range comments, or `C` for a file comment. Save with **Ctrl+S**.
-3. Press **`P`** to publish all unpublished, unresolved whole-PR comments for that PR. In **`L`**, `P` publishes only the selected comment, to the PR recorded with it.
+3. Press **`P`** to publish all unpublished, unresolved comments for that PR, including comments from different commits. In **`L`**, `P` publishes only the selected comment, to the PR recorded with it.
 
-Huicr submits a **COMMENT review** at the captured PR head. New-side and old-side line/range comments become native inline review comments. File-level comments appear under filename headings in the review summary; this also supports binary files and files without a text diff. The resulting review URL is shown in the pane and retained with the comments.
+Huicr submits a **COMMENT review** at the captured PR head. New-side and old-side line/range comments become native inline review comments. Commit-wise new-side ranges are mapped from the reviewed commit to the PR head; old-side ranges are mapped from that commit's actual parent back to the PR merge base. Mapping follows file renames and line shifts while requiring the reviewed text to remain unchanged. Inline comments include a link to the reviewed commit.
+
+If later commits replace/delete a reviewed line, insert inside its range, or remove its inline location from GitHub's diff, the comment appears in the review summary with the **original commit, source link, line range, and captured snippet**. File-level comments also appear under filename headings in the summary, including comments on intermediate files absent from the final diff. The resulting review URL is shown in the pane and retained with the comments.
 
 The comment list and inline boxes track **agent draft/sent** and **GitHub draft/posted/edited** independently. A comment sent to the agent is still eligible for GitHub, and publishing it keeps it available for agent delivery. Editing a published comment makes the new version eligible for a **new review**. Local edits, resolution, and deletion do not modify previously published GitHub content.
 
-Only comments captured in a **whole-PR** view are eligible. Commit-wise, branch, and worktree comments keep their local/agent workflow. GitHub posting requires PR metadata saved with the comment; older drafts without that metadata can be recreated in a freshly loaded whole-PR view.
+Comments captured in **commit-wise or whole-PR** views are eligible. Branch and worktree comments keep their local/agent workflow. GitHub posting requires PR metadata saved with the comment; older drafts without that metadata can be recreated in a freshly loaded PR view.
 
-Before posting, huicr verifies that the PR is open and its head and base revisions still match each selected comment. It also verifies that each line/range lies in one actual GitHub diff hunk, since GitHub's context can differ from your local `context_lines`. If the PR has changed, refresh with `r` and recreate stale comments against the new whole-PR diff. All selected comments are validated before publication.
+Before posting, huicr verifies that the PR is open and its head and base revisions still match the PR snapshot saved with each selected comment. Inline ranges must lie in one actual GitHub diff hunk, since GitHub's context can differ from your local `context_lines`. Whole-PR comments outside GitHub's context require selecting another line or using a file comment; commit-wise comments retain their original context in the summary. If the PR has changed, refresh with `r` and recreate stale comments against the new PR snapshot. All selected comments are prepared before publication.
 
 GitHub publication has its own durable outbox containing the exact payload and comment versions. Rejected requests retain the drafts for correction and retry. After a timeout or interruption, **`P` or `X` checks GitHub for the existing review**, identified by a hidden batch marker in its summary. A recovered review is marked posted without resubmitting it. If no matching review is found, check the PR yourself, then use **`X` → `retry`** to permit another attempt; `P` performs that attempt. Recovery also works after the PR advances or closes.
 
@@ -184,7 +186,7 @@ Run the checkout's launcher, or install the optional console entrypoint with `pi
 # Send specific drafts (omit --id for all pending drafts).
 /path/to/huicr/bin/huicr send --to w1:p1 --mode submit --id COMMENT_ID
 
-# Publish whole-PR drafts to GitHub (omit --id to publish all for this PR).
+# Publish PR drafts to GitHub (omit --id to publish all for this PR).
 /path/to/huicr/bin/huicr publish https://github.com/owner/repo/pull/123 --id COMMENT_ID
 ```
 

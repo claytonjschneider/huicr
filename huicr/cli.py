@@ -42,7 +42,7 @@ def parser():
     child.add_argument("--to", required=True, help="Herdr agent pane ID")
     child.add_argument("--mode", choices=("paste", "submit"), default="paste")
     child.add_argument("--id", action="append", help="send just these comment IDs (repeatable)")
-    child = subs.add_parser("publish", help="post whole-PR drafts as a GitHub comment review")
+    child = subs.add_parser("publish", help="post PR drafts as a GitHub comment review")
     child.add_argument("target", help="GitHub PR URL/number")
     child.add_argument("--repo", default=".")
     child.add_argument("--id", action="append", help="publish just these comment IDs (repeatable)")

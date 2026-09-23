@@ -42,6 +42,11 @@ def parser():
     child.add_argument("--to", required=True, help="Herdr agent pane ID")
     child.add_argument("--mode", choices=("paste", "submit"), default="paste")
     child.add_argument("--id", action="append", help="send just these comment IDs (repeatable)")
+    child = subs.add_parser("publish", help="post whole-PR drafts as a GitHub comment review")
+    child.add_argument("target", help="GitHub PR URL/number")
+    child.add_argument("--repo", default=".")
+    child.add_argument("--id", action="append", help="publish just these comment IDs (repeatable)")
+    child.add_argument("--retry", action="store_true", help="authorize a retry after checking GitHub for an uncertain prior post")
     subs.add_parser("state-path", help="print the local review database path")
     subs.add_parser("doctor", help="check required executables and configuration")
     return p
@@ -85,6 +90,9 @@ def main():
             repo = Repo(args.repo)
             pane = call("agent", "get", args.to)["agent"]
             print(send(store, str(repo.root), identity(pane, repo), args.mode, args.id))
+        elif args.command == "publish":
+            from .github import publish
+            print(publish(Repo(args.repo), store, args.target, args.id, retry=args.retry))
         elif args.command == "review":
             if not sys.stdin.isatty() or not sys.stdout.isatty():
                 raise HuicrError("Review needs an interactive terminal. Use `huicr open` inside Herdr or `huicr comments` for JSON.")

@@ -6,7 +6,7 @@
 
 - macOS or Linux; Python **3.11+** with curses; Git.
 - Herdr **0.9.1+** for pane actions, turn events, and feedback delivery.
-- Authenticated `gh` and Git access to the repository for GitHub PR reviews.
+- `gh` authenticated with read access to the repository for GitHub PR reviews.
 
 No third-party Python runtime dependencies. The terminal UI also runs standalone.
 
@@ -67,6 +67,22 @@ huicr -h
 ```
 
 For a local checkout, use `pipx install /path/to/huicr`, run `/path/to/huicr/bin/huicr` directly, or add `/path/to/huicr/bin` to your shell's PATH. Configuration and review state live in huicr's own user directories, independently of the source checkout.
+
+### GitHub authentication
+
+PR reviews reuse **GitHub CLI authentication** for both API requests and HTTPS Git fetches. An existing `gh auth login` session or a `GH_TOKEN` / `GITHUB_TOKEN` environment variable is sufficient, provided it has read access to the repository. No huicr-specific token setting or `gh auth setup-git` step is needed; the fetch credential helper is configured only for that command and host.
+
+Check your existing authentication from a normal terminal:
+
+```sh
+gh auth status --hostname github.com
+```
+
+If you have not authenticated `gh` or supplied a token, run `gh auth login --hostname github.com` once in that terminal. For GitHub Enterprise, use your PR's hostname; `gh` also supports `GH_ENTERPRISE_TOKEN` / `GITHUB_ENTERPRISE_TOKEN` for enterprise hosts.
+
+Environment tokens must be available to the process running huicr. When using the Herdr plugin, export the token before starting Herdr; restart Herdr if its running process predates that environment change. A token set only in a different shell will not be inherited by an existing server.
+
+Authentication is noninteractive inside the review pane. Missing or rejected credentials produce an in-pane error instead of a username/password prompt over the UI.
 
 ## Review scopes
 

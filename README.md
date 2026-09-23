@@ -6,7 +6,7 @@ Review changes commit-by-commit, toggle blame, and send persistent line/file com
 
 ## Install
 
-Requires **Herdr 0.9.1+**, **Python 3.11+**, and **Git** on macOS or Linux. GitHub PR reviews also need an authenticated `gh` CLI.
+Requires **Herdr 0.9.1+**, **Python 3.11+**, and **Git** on macOS or Linux. GitHub PR reviews also need the `gh` CLI and reuse its existing login or token; see [GitHub authentication](docs/reference.md#github-authentication).
 
 ```sh
 herdr plugin install claytonjschneider/huicr

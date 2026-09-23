@@ -8,8 +8,9 @@ from .config import HuicrError
 from .process import run
 
 
-def gh(*args):
-    return run(["gh", *args], timeout=120).stdout.decode()
+def gh(*args, cwd=None):
+    return run(["gh", *args], cwd=cwd, env={"GH_PROMPT_DISABLED": "1"},
+               input=b"", timeout=120).stdout.decode()
 
 
 def load_pr(repo, target):
@@ -17,7 +18,7 @@ def load_pr(repo, target):
     if match:
         host, owner, name, number = match.groups()
     elif target.isdigit():
-        info = json.loads(run(["gh", "repo", "view", "--json", "nameWithOwner,url"], cwd=repo.root).stdout)
+        info = json.loads(gh("repo", "view", "--json", "nameWithOwner,url", cwd=repo.root))
         host = urlparse(info["url"]).hostname
         owner, name = info["nameWithOwner"].split("/")
         number = target
@@ -29,14 +30,24 @@ def load_pr(repo, target):
     base = info["base"]["sha"]
     remote = f"https://{host}/{owner}/{name}.git"
     namespace = f"refs/huicr/pr/{host}/{owner}/{name}/{number}"
-    repo.git("fetch", "--no-tags", "--no-write-fetch-head", remote,
-             f"+refs/pull/{number}/head:{namespace}/head", timeout=120)
+
+    def fetch(refspec):
+        # Use the same credentials as the API, including gh's stored login or
+        # environment token. Scope the helper to this host and this invocation.
+        # Git's /dev/tty and askpass prompts bypass curses, so disable both.
+        repo.git("-c", f"credential.https://{host}.helper=",
+                 "-c", f"credential.https://{host}.helper=!gh auth git-credential",
+                 "fetch", "--no-tags", "--no-write-fetch-head", remote, refspec,
+                 env={"GH_PROMPT_DISABLED": "1", "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "false"},
+                 input=b"", timeout=120)
+
+    fetch(f"+refs/pull/{number}/head:{namespace}/head")
     if repo.resolve(f"{namespace}/head") != head:
         raise HuicrError("PR changed during fetch. Refresh to capture a consistent review.")
 
     def ensure(oid, name):
         if repo.git("cat-file", "-e", f"{oid}^{{commit}}", check=False).returncode:
-            repo.git("fetch", "--no-tags", "--no-write-fetch-head", remote, f"{oid}:{namespace}/{name}", timeout=120)
+            fetch(f"{oid}:{namespace}/{name}")
         repo.git("update-ref", f"{namespace}/{name}", oid)
 
     # A merged PR's current target contains the PR itself. Its merge commit's

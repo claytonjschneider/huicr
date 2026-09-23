@@ -1,3 +1,4 @@
+import curses
 import unittest
 from unittest.mock import Mock, patch
 
@@ -38,13 +39,13 @@ class WrappingTest(RepositoryFixture):
         return [call.args for call in rows.call_args_list if call.args[1] == content_x]
 
     def test_scrolls_through_a_line_taller_than_the_pane_and_comments_on_source_line(self):
-        text = "x" * 370 + " WRAP_END"
+        text = "x" * 333 + " WRAP_END"
         ui = self.make_ui(text, height=14)
         source_line = ui.cursor
         self.assertTrue(ui.wrap)
         self.assertNotIn("WRAP_END", "\n".join(row[3] for row in self.render(ui)))
         for _ in range(30):
-            ui.handle("j")
+            ui.handle("\x04")
             if "WRAP_END" in "\n".join(row[3] for row in self.render(ui)):
                 break
         else:
@@ -56,6 +57,21 @@ class WrappingTest(RepositoryFixture):
         anchor = self.store.comments(str(self.root))[0]["anchor"]
         self.assertEqual((anchor["side"], anchor["start"], anchor["end"]), ("new", 1, 1))
         self.assertEqual(anchor["snippet"], "+" + text)
+
+    def test_j_k_and_arrows_move_by_source_line_in_diff_and_blame(self):
+        ui = self.make_ui("x" * 200)
+        for blame in (False, True):
+            if blame:
+                ui.handle("a")
+            source_line = ui.cursor
+            for down, up in (("j", "k"), (curses.KEY_DOWN, curses.KEY_UP)):
+                with self.subTest(blame=blame, down=down):
+                    ui.cursor_row = 1
+                    self.render(ui)
+                    ui.handle(down)
+                    self.assertEqual((ui.cursor, ui.cursor_row), (source_line + 1, 0))
+                    ui.handle(up)
+                    self.assertEqual((ui.cursor, ui.cursor_row), (source_line, 0))
 
     def test_selection_from_a_continuation_keeps_original_line_numbers(self):
         text = "x" * 100
@@ -107,8 +123,6 @@ class WrappingTest(RepositoryFixture):
                 self.assertEqual(ui.cursor, source_line)
                 self.assertTrue(all(sum(cell_width(char) for char in row[3]) <= row[2] for row in rows))
                 self.assertTrue(all(4 <= row[0] < size[0] - 5 for row in rows))
-                ui.handle("j")
-                self.assertEqual(ui.cursor, source_line)
 
     def test_inline_editor_stays_visible_on_a_long_wrapped_line(self):
         ui = self.make_ui("x" * 370, height=18)

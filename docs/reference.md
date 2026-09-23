@@ -129,7 +129,7 @@ Reviews never check out another branch. PR objects are fetched under `refs/huicr
 
 Blame on a removed line starts on the old side, using the historical filename for renames. Mutable snapshots attribute unchanged lines to history and label new lines `uncommitted`. Comments work from blame too. File content, filenames, and commit messages are rendered as text, including escaped/control characters.
 
-Diff and blame text **wrap to the pane width by default**. Press `w` to toggle wrapping; the choice survives reopening, including when you open an explicit scope or PR. Continuation rows have a `↪` marker. Movement and paging traverse display rows, so even a source line taller than the pane can be read. Line numbers, selections, and comment anchors still refer to the original source lines. With wrapping off, use `h` / `l` to scroll horizontally. Comment editors always wrap.
+Diff and blame text **wrap to the pane width by default**. Press `w` to toggle wrapping; the choice survives reopening, including when you open an explicit scope or PR. Continuation rows have a `↪` marker. **`j` / `k` and the arrow keys move by source line**, treating every wrapped line as one item. Paging traverses display rows so a source line taller than the pane can still be read. Line numbers, selections, and comment anchors refer to the original source lines. With wrapping off, use `h` / `l` to scroll horizontally. Comment editors always wrap.
 
 ## Comments and the agent loop
 

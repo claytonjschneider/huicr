@@ -25,7 +25,7 @@ Scopes
   m  whole range / commit      , .  previous / next commit
 
 Navigation
-  Tab  cycle commits / files / diff     j k / arrows  move
+  Tab  cycle commits / files / diff     j k / arrows  move by source line
   Enter  focus diff            g G  top / bottom
   Ctrl+D / Ctrl+U  half page    h l  horizontal scroll (wrap off)
   w  toggle text wrapping (default on; saved per worktree)
@@ -608,16 +608,19 @@ class UI:
             self.file_index = min(max(0, self.file_index + delta), max(0, len(self.view.files) - 1))
             self.load_file()
 
-    def move(self, delta):
+    def move(self, delta, visual=False):
         if self.focus == "files":
             self.move_file(delta)
         elif self.focus == "commits":
             self.move_commit(delta)
-        else:
+        elif visual:
             layout = self.line_layout()
             if layout.rows:
                 target = min(max(0, layout.position(self.cursor, self.cursor_row) + delta), len(layout.rows) - 1)
                 self.cursor, self.cursor_row, _ = layout.rows[target]
+        else:
+            self.cursor = min(max(0, self.cursor + delta), max(0, len(self.lines) - 1))
+            self.cursor_row = 0
 
     def edit_comment(self, comment=None, file_level=False):
         if not self.file:
@@ -762,9 +765,9 @@ class UI:
         elif key in ("k", curses.KEY_UP):
             self.move(-1)
         elif key in ("\x04", curses.KEY_NPAGE):
-            self.move(max(1, (self.screen.getmaxyx()[0] - 8) // 2))
+            self.move(max(1, (self.screen.getmaxyx()[0] - 8) // 2), visual=True)
         elif key in ("\x15", curses.KEY_PPAGE):
-            self.move(-max(1, (self.screen.getmaxyx()[0] - 8) // 2))
+            self.move(-max(1, (self.screen.getmaxyx()[0] - 8) // 2), visual=True)
         elif key in ("g", curses.KEY_HOME):
             self.move(-10000000)
         elif key in ("G", curses.KEY_END):

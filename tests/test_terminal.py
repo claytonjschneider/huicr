@@ -90,6 +90,28 @@ class TerminalTest(RepositoryFixture):
         self.assertEqual(process.returncode, 0)
         self.assertEqual(self.store.comments(str(self.root))[0]["body"], comments[0]["body"])
 
+    def test_wrapping_defaults_on_and_toggle_survives_reopening_an_explicit_scope(self):
+        self.write("file.txt", "x" * 204 + "WRAPTAIL\nsecond\nthird\n")
+        master, process, output, wait_for = self.start_ui()
+        wait_for(lambda: b"WRAPTAIL" in output)
+        self.assertIn(b"wrap:on", output)
+        os.write(master, b"w")
+        wait_for(lambda: b"Text wrapping off" in output)
+        self.assertFalse(self.store.get(str(self.root), "ui")["wrap"])
+        os.write(master, b"q")
+        wait_for(lambda: process.poll() is not None)
+        self.assertEqual(process.returncode, 0)
+
+        master, process, output, wait_for = self.start_ui("--scope", "unstaged")
+        wait_for(lambda: b"wrap:off" in output and b"x" * 20 in output)
+        self.assertNotIn(b"WRAPTAIL", output)
+        os.write(master, b"w")
+        wait_for(lambda: b"WRAPTAIL" in output)
+        self.assertTrue(self.store.get(str(self.root), "ui")["wrap"])
+        os.write(master, b"q")
+        wait_for(lambda: process.poll() is not None)
+        self.assertEqual(process.returncode, 0)
+
     def test_publish_pr_from_terminal_and_cli_with_simulated_github(self):
         self.write("file.txt", "review this PR line\nsecond\nthird\n")
         head = self.commit("PR change")

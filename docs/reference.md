@@ -114,7 +114,8 @@ Reviews never check out another branch. PR objects are fetched under `refs/huicr
 | `Tab`, `Enter` | Cycle focus; focus diff |
 | `Ctrl+D` / `Ctrl+U`, PageDown / PageUp | Move a half-page |
 | `g` / `G` | First / last item |
-| `h` / `l` | Horizontal scroll |
+| `w` | Toggle text wrapping (on by default; saved per worktree) |
+| `h` / `l` | Horizontal scroll when wrapping is off |
 | `{` / `}`, `F` / `f` | Previous / next file |
 | `[` / `]` | Previous / next hunk |
 | `/`, `n` / `N` | Find, next / previous match |
@@ -127,6 +128,8 @@ Reviews never check out another branch. PR objects are fetched under `refs/huicr
 | `q` | Close, preserving review state |
 
 Blame on a removed line starts on the old side, using the historical filename for renames. Mutable snapshots attribute unchanged lines to history and label new lines `uncommitted`. Comments work from blame too. File content, filenames, and commit messages are rendered as text, including escaped/control characters.
+
+Diff and blame text **wrap to the pane width by default**. Press `w` to toggle wrapping; the choice survives reopening, including when you open an explicit scope or PR. Continuation rows have a `↪` marker. Movement and paging traverse display rows, so even a source line taller than the pane can be read. Line numbers, selections, and comment anchors still refer to the original source lines. With wrapping off, use `h` / `l` to scroll horizontally. Comment editors always wrap.
 
 ## Comments and the agent loop
 

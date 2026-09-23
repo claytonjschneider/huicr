@@ -36,6 +36,7 @@ Prefer a dedicated tab? Set `placement = "tab"` in the plugin's `config.toml`. F
 | `,` / `.` / `m` | Previous commit / next commit / whole-range diff |
 | `j` / `k`, `Tab` | Move / switch focus |
 | `a` | Toggle blame |
+| `w` | Toggle text wrapping (on by default) |
 | `r` / `?` / `q` | Refresh / all shortcuts / close |
 
 Branch, range, and PR reviews start commit-wise, using each commit's actual parent. Reviews stay frozen until you refresh, so the agent can keep editing without shifting your comment locations.

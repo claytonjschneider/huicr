@@ -10,6 +10,7 @@ from .config import HuicrError
 from .git import DiffLine
 from .github import publish, reconcile_publication
 from .herdr import call, identity, repo_for_pane, send
+from .keys import ENTER_KEYS, SHIFT_ENTER, KeyReader, Paste, enhanced_input
 from .review import Review
 from .theme import Theme
 
@@ -41,7 +42,8 @@ Comments (durable immediately)
   s  paste all unsent drafts   S  submit all unsent drafts
   P  post PR drafts to GitHub (commit-wise or whole-PR)
   X  reconcile an uncertain agent delivery / GitHub publication
-  In the comment editor: Enter newline, Ctrl+S save, Esc cancel
+  Text boxes: Enter finishes, Shift+Enter newline, Ctrl+S saves, Esc cancels
+  Opt+Backspace / Ctrl+W delete word; Ctrl+U / Ctrl+K delete to line start/end
 
 Comments keep the original commit, trees, side, line range, and snippet.
 Sending keeps the pane open and marks only that version as delivered.
@@ -168,8 +170,8 @@ def editor_layout(text, width, cursor=0):
     return rows, caret
 
 
-def edit_text(text, cursor, key):
-    """Editing operations shared by inline comment boxes."""
+def edit_text(text, cursor, key, multiline=True):
+    """Editing operations shared by comments, search, and revision prompts."""
     if key in (curses.KEY_BACKSPACE, "\x7f", "\b"):
         if cursor:
             text, cursor = text[:cursor - 1] + text[cursor:], cursor - 1
@@ -202,13 +204,27 @@ def edit_text(text, cursor, key):
         end = text.find("\n", cursor)
         text = text[:cursor] + (text[end:] if end >= 0 else "")
     elif key == "\x17":
-        prefix = text[:cursor].rstrip()
-        boundary = max(prefix.rfind(" "), prefix.rfind("\n")) + 1
+        boundary = cursor
+        while boundary and text[boundary - 1].isspace():
+            boundary -= 1
+        if boundary:
+            word = text[boundary - 1].isalnum() or text[boundary - 1] == "_"
+            while boundary and not text[boundary - 1].isspace() and (text[boundary - 1].isalnum() or text[boundary - 1] == "_") == word:
+                boundary -= 1
         text, cursor = text[:boundary] + text[cursor:], boundary
-    elif isinstance(key, str) and (key.isprintable() or key in ("\n", "\r", "\t")):
-        key = "\n" if key == "\r" else "    " if key == "\t" else key
-        text = text[:cursor] + key + text[cursor:]
-        cursor += len(key)
+    else:
+        inserted = ""
+        if isinstance(key, Paste):
+            inserted = key.text.replace("\r\n", "\n").replace("\r", "\n").replace("\t", "    ")
+            inserted = "".join(c for c in inserted if c.isprintable() or c == "\n")
+            if not multiline:
+                inserted = inserted.replace("\n", " ")
+        elif key == SHIFT_ENTER and multiline:
+            inserted = "\n"
+        elif isinstance(key, str) and (key.isprintable() or key == "\t"):
+            inserted = "    " if key == "\t" else key
+        text = text[:cursor] + inserted + text[cursor:]
+        cursor += len(inserted)
     return text, cursor
 
 
@@ -246,6 +262,7 @@ class UI:
         screen.bkgd(" ", self.colors.get("normal", 0))
         screen.keypad(True)
         screen.timeout(250)
+        self.keys = KeyReader(screen)
 
     @property
     def view(self):
@@ -454,7 +471,7 @@ class UI:
             if inline_height and inline["anchor"]["side"] != "file" and visual == cursor:
                 self.draw_comment(row, content_x, inline_height, content_width, inline)
                 row += inline_height
-        hint = "Ctrl+S save · Enter newline · Esc cancel" if self.editor else self.message
+        hint = "Enter finish · Shift+Enter newline · Ctrl+S save · Esc cancel" if self.editor else self.message
         self.put(height - 3, 0, f" {hint}", self.colors.get("comment", 0))
         self.put(height - 2, 0, " c comment  C file  v select  L comments  s paste  S submit  P GitHub")
         self.put(height - 1, 0, " Tab focus  j/k move  ,/. commits  m whole  w wrap  r refresh  ? help  q close", self.colors.get("dim", 0))
@@ -503,21 +520,12 @@ class UI:
                 box_y, box_x = max(0, (height - box_height) // 2), max(0, (width - box_width) // 2)
                 self.box(box_y, box_x, box_height, box_width, title, interactive=True)
                 usable = max(2, box_width - 4)
-                # Character wrapping keeps caret addressing deterministic. Curses
-                # handles wide glyphs; a resize never changes the stored text.
-                before = text[:cursor]
-                logical = text.split("\n")
-                visual = []
-                for line in logical:
-                    visual.extend([line[i:i + usable] for i in range(0, len(line), usable)] or [""])
-                prior = before.split("\n")
-                cy = sum(max(1, (len(line) + usable - 1) // usable) for line in prior[:-1]) + len(prior[-1]) // usable
-                cx = len(prior[-1]) % usable
+                visual, (cy, cx) = editor_layout(text, usable, cursor)
                 room = max(1, box_height - 4)
                 offset = max(0, cy - room + 1)
                 for y, line in enumerate(visual[offset:offset + room], box_y + 1):
                     self.put(y, box_x + 2, line, self.colors.get("interactive", 0), usable)
-                self.put(box_y + box_height - 2, box_x + 1, " Ctrl+S save · Enter newline · Esc cancel" if multiline else " Enter accept · Esc cancel",
+                self.put(box_y + box_height - 2, box_x + 1, " Enter finish · Shift+Enter newline · Ctrl+S save" if multiline else " Enter accept · Opt+Backspace word · Esc cancel",
                          self.colors.get("interactive", 0), box_width - 2)
                 try:
                     self.screen.move(min(height - 2, box_y + cy - offset + 1), min(width - 2, box_x + cx + 2))
@@ -527,42 +535,14 @@ class UI:
                 key = self.get_key()
                 if key == "\x1b":
                     return None
-                if key == "\x13" or (not multiline and key in ("\n", "\r", curses.KEY_ENTER)):
+                if key == "\x13" or key in ENTER_KEYS:
                     return text.strip()
-                if key in (curses.KEY_BACKSPACE, "\x7f", "\b"):
-                    if cursor:
-                        text = text[:cursor - 1] + text[cursor:]
-                        cursor -= 1
-                elif key == curses.KEY_DC:
-                    text = text[:cursor] + text[cursor + 1:]
-                elif key == curses.KEY_LEFT:
-                    cursor = max(0, cursor - 1)
-                elif key == curses.KEY_RIGHT:
-                    cursor = min(len(text), cursor + 1)
-                elif key in (curses.KEY_HOME, "\x01"):
-                    cursor = text.rfind("\n", 0, cursor) + 1
-                elif key in (curses.KEY_END, "\x05"):
-                    next_line = text.find("\n", cursor)
-                    cursor = next_line if next_line >= 0 else len(text)
-                elif key == "\x15":
-                    text, cursor = text[cursor:], 0
-                elif key == "\x17":
-                    prefix = text[:cursor].rstrip()
-                    boundary = max(prefix.rfind(" "), prefix.rfind("\n")) + 1
-                    text, cursor = text[:boundary] + text[cursor:], boundary
-                elif isinstance(key, str) and (key.isprintable() or (multiline and key in ("\n", "\r"))):
-                    if key == "\r":
-                        key = "\n"
-                    text = text[:cursor] + key + text[cursor:]
-                    cursor += len(key)
+                text, cursor = edit_text(text, cursor, key, multiline)
         finally:
             curses.curs_set(0)
 
     def get_key(self):
-        try:
-            return self.screen.get_wch()
-        except curses.error:
-            return None
+        return self.keys.read()
 
     def comment_editor(self, anchor, initial=""):
         if self.screen.getmaxyx()[0] < 16 or self.screen.getmaxyx()[1] < 44:
@@ -583,7 +563,7 @@ class UI:
                 key = self.get_key()
                 if key == "\x1b":
                     return None
-                if key == "\x13":
+                if key == "\x13" or key in ENTER_KEYS:
                     return self.editor["text"].strip()
                 self.editor["text"], self.editor["cursor"] = edit_text(self.editor["text"], self.editor["cursor"], key)
         finally:
@@ -938,6 +918,12 @@ def launch(review, config, saved=None):
     changed[0] &= ~(termios.IXON | termios.IXOFF)
     termios.tcsetattr(fd, termios.TCSANOW, changed)
     try:
-        curses.wrapper(lambda screen: UI(screen, review, config).loop(saved))
+        def run(screen):
+            curses.nonl()  # Preserve pasted CRLF so it can be normalized once.
+            ui = UI(screen, review, config)
+            screen.refresh()  # Enter the alternate screen before changing modes.
+            with enhanced_input(sys.stdout):
+                ui.loop(saved)
+        curses.wrapper(run)
     finally:
         termios.tcsetattr(fd, termios.TCSANOW, settings)

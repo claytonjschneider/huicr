@@ -135,7 +135,7 @@ Diff and blame text **wrap to the pane width by default**. Press `w` to toggle w
 
 1. Move to a line, or press `v` and extend a range.
 2. `c` comments on it; `C` comments on the file.
-3. A bordered paragraph box opens **inline below the selected line**, or below the file header for file comments. It starts with **one editable line**, grows as you type/wrap, and keeps surrounding code visible. **Enter** inserts a newline, **Ctrl+S** saves, **Esc** cancels (25 ms escape-key delay).
+3. A bordered paragraph box opens **inline below the selected line**, or below the file header for file comments. It starts with **one editable line**, grows as you type/wrap, and keeps surrounding code visible. **Enter** saves and finishes, **Shift+Enter** inserts a newline, **Ctrl+S** also saves, and **Esc** cancels (short escape-key delay).
 4. `s` pastes all unsent drafts into the agent's input; **you press Enter there**. `S` submits them immediately.
 5. Continue reviewing. Sending never closes the pane.
 
@@ -147,10 +147,27 @@ Each comment stores its ID/version, scope, commit, old/new trees, filename, side
 
 A durable agent outbox is written **before** transport. A failed/crashed send can have an uncertain outcome because terminal input has no transactional acknowledgement from the agent. Huicr retains the batch and prevents automatic resending. After checking the agent, press `X` and enter `sent` or `retry`. “Sent” means Herdr accepted the input, not that the agent acted on it. Paste-mode feedback is considered delivered once pasted.
 
+### Text entry
+
+Comments, search, revision selection, and other text boxes share these editing keys:
+
+| Key | Action |
+| --- | --- |
+| **Enter** | Finish: save the comment or accept the form |
+| **Shift+Enter** | Insert a newline in a multiline field |
+| **Ctrl+S** | Save / accept as an alternative to Enter |
+| **Esc** | Cancel |
+| **Option/Alt+Backspace**, **Ctrl+W** | Delete the preceding word or punctuation run |
+| **Ctrl+U** / **Ctrl+K** | Delete to the start / end of the current line |
+| **Ctrl+A** / **Ctrl+E**, Home / End | Move to the start / end of the current line |
+| Arrow keys, Backspace, Delete | Move and edit text |
+
+Shift+Enter uses the terminal's modified-key reporting (Kitty/CSI-u or xterm encoding). **Alt+Enter** is also accepted for a newline. Huicr enables extended-key reporting and bracketed paste inside its pane and restores those modes on exit. Multiline pastes stay in the editor until you finish with Enter or Ctrl+S; line endings are normalized and tabs expand to four spaces. Single-line fields convert pasted newlines to spaces.
+
 ### Publishing GitHub reviews
 
 1. Open a GitHub PR with `o`. Review commit-wise with **`,` / `.`**, or use **`m`** for the whole diff.
-2. Use `c` / `v` + `c` for line/range comments, or `C` for a file comment. Save with **Ctrl+S**.
+2. Use `c` / `v` + `c` for line/range comments, or `C` for a file comment. Finish with **Enter** or **Ctrl+S**.
 3. Press **`P`** to publish all unpublished, unresolved comments for that PR, including comments from different commits. In **`L`**, `P` publishes only the selected comment, to the PR recorded with it.
 
 Huicr submits a **COMMENT review** at the captured PR head. New-side and old-side line/range comments become native inline review comments. Commit-wise new-side ranges are mapped from the reviewed commit to the PR head; old-side ranges are mapped from that commit's actual parent back to the PR merge base. Mapping follows file renames and line shifts while requiring the reviewed text to remain unchanged. Inline comments include a link to the reviewed commit.

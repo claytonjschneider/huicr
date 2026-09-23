@@ -45,10 +45,12 @@ Branch, range, and PR reviews start commit-wise, using each commit's actual pare
 
 1. Select a line, or use `v` to select a range.
 2. Press `c` for a line comment or `C` for a file comment. The inline box grows as you type.
-3. **Ctrl+S** saves, **Enter** adds a newline, **Esc** cancels.
+3. **Enter** saves and finishes, **Shift+Enter** adds a newline, **Esc** cancels. **Ctrl+S** also saves.
 4. **`s` pastes** unsent comments into the agent's input; **`S` submits** them immediately.
 
 The review stays open. Comments survive closing and retain their original commit, file, and snippet. Use `L` to browse/edit/send individual comments, or `A` to choose an agent.
+
+Text boxes share **Option+Backspace / Ctrl+W** to delete a word and **Ctrl+U / Ctrl+K** to delete to the start/end of a line. See [text entry](docs/reference.md#text-entry) for all shortcuts.
 
 ## Post to GitHub
 

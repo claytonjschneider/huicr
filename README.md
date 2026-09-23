@@ -4,6 +4,8 @@ A personal code-review pane for [Herdr](https://herdr.dev), pronounced like **we
 
 Review changes commit-by-commit, toggle blame, and send persistent line/file comments to your agent or publish a GitHub PR review.
 
+![huicr reviewing a commit in Herdr with an inline line comment](docs/usage.png)
+
 ## Install
 
 Requires **Herdr 0.9.1+**, **Python 3.11+**, and **Git** on macOS or Linux. GitHub PR reviews also need the `gh` CLI and reuse its existing login or token; see [GitHub authentication](docs/reference.md#github-authentication).

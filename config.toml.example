@@ -1,0 +1,7 @@
+placement = "split"       # split | zoomed | tab
+direction = "right"       # right | down
+default_scope = "unstaged" # unstaged | worktree | branch | turn
+context_lines = 5
+max_file_bytes = 2000000
+track_turns = true
+# In the UI: s pastes drafts, S submits drafts, without closing the review.

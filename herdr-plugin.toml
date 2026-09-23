@@ -1,0 +1,46 @@
+id = "claytonjschneider.huicr"
+name = "huicr"
+version = "0.1.0"
+min_herdr_version = "0.9.1"
+platforms = ["macos", "linux"]
+description = "Commit-wise personal review, durable comments, and ongoing agent feedback."
+
+[[actions]]
+id = "toggle"
+title = "huicr: toggle review pane"
+contexts = ["pane", "workspace"]
+command = ["sh", "bin/huicr", "action", "toggle"]
+
+[[actions]]
+id = "open"
+title = "huicr: open review pane"
+contexts = ["pane", "workspace"]
+command = ["sh", "bin/huicr", "action", "open"]
+
+[[actions]]
+id = "close"
+title = "huicr: close review pane"
+contexts = ["pane", "workspace"]
+command = ["sh", "bin/huicr", "action", "close"]
+
+[[actions]]
+id = "review-link"
+title = "huicr: review GitHub PR"
+contexts = ["pane"]
+command = ["sh", "bin/huicr", "action", "open"]
+
+[[panes]]
+id = "review"
+title = "huicr"
+placement = "split"
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/bin/huicr\" review"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["sh", "bin/huicr", "event"]
+
+[[link_handlers]]
+id = "github-pr"
+title = "Review PR in huicr"
+pattern = '^https://github\.com/[^/]+/[^/]+/pull/[0-9]+/?$'
+action = "review-link"

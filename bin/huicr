@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+# Herdr actions may have a minimal PATH, including Apple's older Python.
+export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH:-/usr/bin:/bin}"
+script=$0
+while [ -L "$script" ]; do
+    target=$(readlink "$script")
+    case "$target" in
+        /*) script=$target ;;
+        *) script="$(dirname -- "$script")/$target" ;;
+    esac
+done
+root=$(CDPATH= cd -- "$(dirname -- "$script")/.." && pwd)
+exec python3 "$root/bin/huicr.py" "$@"

@@ -10,6 +10,7 @@ from .config import HuicrError
 from .git import DiffLine
 from .github import publish, reconcile_publication
 from .herdr import call, identity, repo_for_pane, send
+from .keys import ENTER_KEYS, SHIFT_ENTER, KeyReader, Paste, enhanced_input
 from .review import Review
 from .theme import Theme
 
@@ -24,9 +25,10 @@ Scopes
   m  whole range / commit      , .  previous / next commit
 
 Navigation
-  Tab  cycle commits / files / diff     j k / arrows  move
+  Tab  cycle commits / files / diff     j k / arrows  move by source line
   Enter  focus diff            g G  top / bottom
-  Ctrl+D / Ctrl+U  half page    h l  horizontal scroll
+  Ctrl+D / Ctrl+U  half page    h l  horizontal scroll (wrap off)
+  w  toggle text wrapping (default on; saved per worktree)
   [ ]  previous / next hunk    { } or F f  previous / next file
   /  find in diff or blame     n N  next / previous match
   z  hide / show navigator     r  refresh captured review
@@ -38,9 +40,10 @@ Comments (durable immediately)
   d  delete comment at cursor  L  all comments + individual send
   R  mark file reviewed        A  choose agent recipient
   s  paste all unsent drafts   S  submit all unsent drafts
-  P  post whole-PR drafts to GitHub (file comments in review summary)
+  P  post PR drafts to GitHub (commit-wise or whole-PR)
   X  reconcile an uncertain agent delivery / GitHub publication
-  In the comment editor: Enter newline, Ctrl+S save, Esc cancel
+  Text boxes: Enter finishes, Shift+Enter newline, Ctrl+S saves, Esc cancels
+  Opt+Backspace / Ctrl+W delete word; Ctrl+U / Ctrl+K delete to line start/end
 
 Comments keep the original commit, trees, side, line range, and snippet.
 Sending keeps the pane open and marks only that version as delivered.
@@ -54,16 +57,72 @@ def clean(text):
     return "".join(ch if ch.isprintable() else " " for ch in str(text).expandtabs(4))
 
 
+def cell_width(char):
+    return 0 if unicodedata.combining(char) else 2 if unicodedata.east_asian_width(char) in "WF" else 1
+
+
 def clip(text, width):
     result = ""
     used = 0
     for char in clean(text):
-        size = 0 if unicodedata.combining(char) else 2 if unicodedata.east_asian_width(char) in "WF" else 1
+        size = cell_width(char)
         if used + size > width:
             break
         result += char
         used += size
     return result
+
+
+def pad(text, width):
+    text = clip(text, width)
+    return text + " " * max(0, width - sum(cell_width(char) for char in text))
+
+
+def wrap_text(text, width):
+    """Wrap display text by terminal cells, keeping combining marks attached."""
+    rows = []
+    row = []
+    used = 0
+    for char in clean(text):
+        size = cell_width(char)
+        if size and row and used + size > width:
+            rows.append("".join(row))
+            row, used = [], 0
+        row.append(char)
+        used += size
+    return rows + ["".join(row)]
+
+
+class LineLayout:
+    """Visual rows map back to immutable source lines for selections/comments."""
+    def __init__(self, lines, width, wrap, blame=False):
+        largest = max((max(line.old or 0, line.new or 0) for line in lines), default=0)
+        self.number_width = max(4, len(str(largest)))
+        gutter = self.number_width + 26 if blame else 2 * self.number_width + 5
+        self.gutter_width = max(0, min(gutter, width - 2))
+        text_width = max(2, width - self.gutter_width)
+        self.rows, self.starts = [], []
+        for index, line in enumerate(lines):
+            self.starts.append(len(self.rows))
+            parts = wrap_text(line.text, text_width) if wrap else [clean(line.text)]
+            self.rows.extend((index, part, text) for part, text in enumerate(parts))
+
+    def position(self, line, part=0):
+        if not self.rows:
+            return 0
+        start = self.starts[line]
+        end = self.starts[line + 1] if line + 1 < len(self.starts) else len(self.rows)
+        return start + min(max(0, part), end - start - 1)
+
+    def match_part(self, line, query):
+        end = self.starts[line + 1] if line + 1 < len(self.starts) else len(self.rows)
+        parts = self.rows[self.starts[line]:end]
+        offset = "".join(text for _, _, text in parts).casefold().find(clean(query).casefold())
+        for _, part, text in parts:
+            if offset < len(text.casefold()):
+                return part
+            offset -= len(text.casefold())
+        return 0
 
 
 def detect_target(text):
@@ -79,7 +138,7 @@ def comment_status(comment):
         return "resolved"
     status = "agent draft" if comment["version"] > comment["sent_version"] else "agent sent"
     anchor = comment["anchor"]
-    if anchor.get("pr") and anchor["scope"] == "pr" and not anchor["commit"]:
+    if anchor.get("pr") and anchor["scope"] == "pr":
         version = comment["github_version"]
         status += " · GitHub " + ("posted" if version >= comment["version"] else "edited" if version else "draft")
     return status
@@ -91,7 +150,7 @@ def editor_layout(text, width, cursor=0):
     column = 0
     caret = (0, 0)
     for index, char in enumerate(text):
-        cells = 0 if unicodedata.combining(char) else 2 if unicodedata.east_asian_width(char) in "WF" else 1
+        cells = cell_width(char)
         if char != "\n" and column + cells > width:
             rows.append("")
             column = 0
@@ -111,8 +170,8 @@ def editor_layout(text, width, cursor=0):
     return rows, caret
 
 
-def edit_text(text, cursor, key):
-    """Editing operations shared by inline comment boxes."""
+def edit_text(text, cursor, key, multiline=True):
+    """Editing operations shared by comments, search, and revision prompts."""
     if key in (curses.KEY_BACKSPACE, "\x7f", "\b"):
         if cursor:
             text, cursor = text[:cursor - 1] + text[cursor:], cursor - 1
@@ -145,13 +204,27 @@ def edit_text(text, cursor, key):
         end = text.find("\n", cursor)
         text = text[:cursor] + (text[end:] if end >= 0 else "")
     elif key == "\x17":
-        prefix = text[:cursor].rstrip()
-        boundary = max(prefix.rfind(" "), prefix.rfind("\n")) + 1
+        boundary = cursor
+        while boundary and text[boundary - 1].isspace():
+            boundary -= 1
+        if boundary:
+            word = text[boundary - 1].isalnum() or text[boundary - 1] == "_"
+            while boundary and not text[boundary - 1].isspace() and (text[boundary - 1].isalnum() or text[boundary - 1] == "_") == word:
+                boundary -= 1
         text, cursor = text[:boundary] + text[cursor:], boundary
-    elif isinstance(key, str) and (key.isprintable() or key in ("\n", "\r", "\t")):
-        key = "\n" if key == "\r" else "    " if key == "\t" else key
-        text = text[:cursor] + key + text[cursor:]
-        cursor += len(key)
+    else:
+        inserted = ""
+        if isinstance(key, Paste):
+            inserted = key.text.replace("\r\n", "\n").replace("\r", "\n").replace("\t", "    ")
+            inserted = "".join(c for c in inserted if c.isprintable() or c == "\n")
+            if not multiline:
+                inserted = inserted.replace("\n", " ")
+        elif key == SHIFT_ENTER and multiline:
+            inserted = "\n"
+        elif isinstance(key, str) and (key.isprintable() or key == "\t"):
+            inserted = "    " if key == "\t" else key
+        text = text[:cursor] + inserted + text[cursor:]
+        cursor += len(inserted)
     return text, cursor
 
 
@@ -162,6 +235,9 @@ class UI:
         self.repo_key = str(self.repo.root)
         self.origin = review.origin
         self.file_index = self.cursor = self.top = self.horizontal = 0
+        self.cursor_row = 0
+        self.wrap = self.store.get(self.repo_key, "ui", {}).get("wrap", True)
+        self._layout_source = self._layout_key = self._layout = None
         self.lines = []
         self.blame_rows = []
         self.blame_side = "new"
@@ -186,6 +262,7 @@ class UI:
         screen.bkgd(" ", self.colors.get("normal", 0))
         screen.keypad(True)
         screen.timeout(250)
+        self.keys = KeyReader(screen)
 
     @property
     def view(self):
@@ -240,6 +317,7 @@ class UI:
         self.file_index = min(max(0, self.file_index), max(0, len(self.view.files) - 1)) if self.view else 0
         if reset:
             self.cursor = self.top = self.horizontal = 0
+            self.cursor_row = 0
         self.selection = None
         self.lines, self.blame_rows = [], []
         if self.file:
@@ -286,6 +364,18 @@ class UI:
         if self.editor:
             self.editor_caret = (y + 1 + cy - offset, x + 2 + cx)
 
+    def navigator_width(self, width):
+        return min(38, max(22, width // 4)) if self.navigator and width >= 65 else 0
+
+    def line_layout(self):
+        width = self.screen.getmaxyx()[1]
+        content_width = width - self.navigator_width(width) - 2
+        key = (content_width, self.wrap, self.blame)
+        if self._layout_source is not self.lines or self._layout_key != key:
+            self._layout = LineLayout(self.lines, content_width, self.wrap, self.blame)
+            self._layout_source, self._layout_key = self.lines, key
+        return self._layout
+
     def draw(self):
         self.screen.erase()
         height, width = self.screen.getmaxyx()
@@ -301,7 +391,7 @@ class UI:
         if self.review.commits:
             label = f"[{self.review.commit_index + 1}/{len(self.review.commits)}] " + label
         self.put(2, 0, f" {label}", self.colors.get("dim", 0))
-        nav = min(38, max(22, width // 4)) if self.navigator and width >= 65 else 0
+        nav = self.navigator_width(width)
         box_height = height - 7
         body = max(1, box_height - 2)
         if nav:
@@ -326,6 +416,7 @@ class UI:
                 attr = self.colors.get("selected" if index == self.file_index else "panel", 0)
                 self.row(row, 1, nav - 3, f" {'✓' if marked else file.status[0]} {file.path}", attr)
         heading = self.file.path if self.file else "No changed files"
+        heading += f"  [wrap:{'on' if self.wrap else 'off'}]"
         if self.blame:
             heading += f"  [blame: {self.blame_side}; H switches side]"
         self.box(3, nav, box_height, width - nav, heading, self.focus == "diff")
@@ -343,15 +434,19 @@ class UI:
             # Grow only when content wraps; retain at least two rows of code.
             inline_height = min(max(3, len(wrapped) + 2), min(14, body - 2))
         code_room = max(1, body - inline_height)
-        self.top = max(0, min(self.top, self.cursor))
-        if self.cursor >= self.top + code_room:
-            self.top = self.cursor - code_room + 1
+        layout = self.line_layout()
+        cursor = layout.position(self.cursor, self.cursor_row)
+        self.cursor_row = layout.rows[cursor][1] if layout.rows else 0
+        self.top = max(0, min(self.top, cursor))
+        if cursor >= self.top + code_room:
+            self.top = cursor - code_room + 1
         relevant = self.current_comments()
         row = 4
         if inline_height and inline["anchor"]["side"] == "file":
             self.draw_comment(row, content_x, inline_height, content_width, inline)
             row += inline_height
-        for index in range(self.top, min(len(self.lines), self.top + code_room)):
+        for visual in range(self.top, min(len(layout.rows), self.top + code_room)):
+            index, part, text = layout.rows[visual]
             line = self.lines[index]
             attr = self.colors.get(line.kind, self.colors.get("panel", 0))
             selected = self.selection is not None and min(self.selection, self.cursor) <= index <= max(self.selection, self.cursor)
@@ -363,21 +458,23 @@ class UI:
                              c["anchor"]["start"] <= (line.old if c["anchor"]["side"] == "old" else line.new) <= c["anchor"]["end"])
                             for c in relevant)
             prefix = "●" if annotated else " "
-            if self.blame:
+            if part:
+                gutter = prefix + " " * max(0, layout.gutter_width - 3) + "↪ "
+            elif self.blame:
                 oid, author, _ = self.blame_rows[index] if index < len(self.blame_rows) else ("", "", "")
-                gutter = f"{prefix}{index + 1:4} {oid[:8]:8} {author[:12]:12} │ "
+                gutter = f"{prefix}{index + 1:{layout.number_width}} {oid[:8]:8} {pad(author, 12)} │ "
             else:
                 sign = {"add": "+", "delete": "-", "context": " "}.get(line.kind, " ")
-                gutter = f"{prefix}{str(line.old or ''):>4} {str(line.new or ''):>4} {sign} "
-            self.row(row, content_x, content_width, gutter + line.text[self.horizontal:], attr)
+                gutter = f"{prefix}{str(line.old or ''):>{layout.number_width}} {str(line.new or ''):>{layout.number_width}} {sign} "
+            self.row(row, content_x, content_width, pad(gutter, layout.gutter_width) + text[0 if self.wrap else self.horizontal:], attr)
             row += 1
-            if inline_height and inline["anchor"]["side"] != "file" and index == self.cursor:
+            if inline_height and inline["anchor"]["side"] != "file" and visual == cursor:
                 self.draw_comment(row, content_x, inline_height, content_width, inline)
                 row += inline_height
-        hint = "Ctrl+S save · Enter newline · Esc cancel" if self.editor else self.message
+        hint = "Enter finish · Shift+Enter newline · Ctrl+S save · Esc cancel" if self.editor else self.message
         self.put(height - 3, 0, f" {hint}", self.colors.get("comment", 0))
         self.put(height - 2, 0, " c comment  C file  v select  L comments  s paste  S submit  P GitHub")
-        self.put(height - 1, 0, " Tab focus  j/k move  ,/. commits  m whole  r refresh  ? help  q close", self.colors.get("dim", 0))
+        self.put(height - 1, 0, " Tab focus  j/k move  ,/. commits  m whole  w wrap  r refresh  ? help  q close", self.colors.get("dim", 0))
 
     def modal(self, title, rows, index=0, extra=None):
         """Return (key, selected-index). Escape and q cancel."""
@@ -423,21 +520,12 @@ class UI:
                 box_y, box_x = max(0, (height - box_height) // 2), max(0, (width - box_width) // 2)
                 self.box(box_y, box_x, box_height, box_width, title, interactive=True)
                 usable = max(2, box_width - 4)
-                # Character wrapping keeps caret addressing deterministic. Curses
-                # handles wide glyphs; a resize never changes the stored text.
-                before = text[:cursor]
-                logical = text.split("\n")
-                visual = []
-                for line in logical:
-                    visual.extend([line[i:i + usable] for i in range(0, len(line), usable)] or [""])
-                prior = before.split("\n")
-                cy = sum(max(1, (len(line) + usable - 1) // usable) for line in prior[:-1]) + len(prior[-1]) // usable
-                cx = len(prior[-1]) % usable
+                visual, (cy, cx) = editor_layout(text, usable, cursor)
                 room = max(1, box_height - 4)
                 offset = max(0, cy - room + 1)
                 for y, line in enumerate(visual[offset:offset + room], box_y + 1):
                     self.put(y, box_x + 2, line, self.colors.get("interactive", 0), usable)
-                self.put(box_y + box_height - 2, box_x + 1, " Ctrl+S save · Enter newline · Esc cancel" if multiline else " Enter accept · Esc cancel",
+                self.put(box_y + box_height - 2, box_x + 1, " Enter finish · Shift+Enter newline · Ctrl+S save" if multiline else " Enter accept · Opt+Backspace word · Esc cancel",
                          self.colors.get("interactive", 0), box_width - 2)
                 try:
                     self.screen.move(min(height - 2, box_y + cy - offset + 1), min(width - 2, box_x + cx + 2))
@@ -447,42 +535,14 @@ class UI:
                 key = self.get_key()
                 if key == "\x1b":
                     return None
-                if key == "\x13" or (not multiline and key in ("\n", "\r", curses.KEY_ENTER)):
+                if key == "\x13" or key in ENTER_KEYS:
                     return text.strip()
-                if key in (curses.KEY_BACKSPACE, "\x7f", "\b"):
-                    if cursor:
-                        text = text[:cursor - 1] + text[cursor:]
-                        cursor -= 1
-                elif key == curses.KEY_DC:
-                    text = text[:cursor] + text[cursor + 1:]
-                elif key == curses.KEY_LEFT:
-                    cursor = max(0, cursor - 1)
-                elif key == curses.KEY_RIGHT:
-                    cursor = min(len(text), cursor + 1)
-                elif key in (curses.KEY_HOME, "\x01"):
-                    cursor = text.rfind("\n", 0, cursor) + 1
-                elif key in (curses.KEY_END, "\x05"):
-                    next_line = text.find("\n", cursor)
-                    cursor = next_line if next_line >= 0 else len(text)
-                elif key == "\x15":
-                    text, cursor = text[cursor:], 0
-                elif key == "\x17":
-                    prefix = text[:cursor].rstrip()
-                    boundary = max(prefix.rfind(" "), prefix.rfind("\n")) + 1
-                    text, cursor = text[:boundary] + text[cursor:], boundary
-                elif isinstance(key, str) and (key.isprintable() or (multiline and key in ("\n", "\r"))):
-                    if key == "\r":
-                        key = "\n"
-                    text = text[:cursor] + key + text[cursor:]
-                    cursor += len(key)
+                text, cursor = edit_text(text, cursor, key, multiline)
         finally:
             curses.curs_set(0)
 
     def get_key(self):
-        try:
-            return self.screen.get_wch()
-        except curses.error:
-            return None
+        return self.keys.read()
 
     def comment_editor(self, anchor, initial=""):
         if self.screen.getmaxyx()[0] < 16 or self.screen.getmaxyx()[1] < 44:
@@ -503,7 +563,7 @@ class UI:
                 key = self.get_key()
                 if key == "\x1b":
                     return None
-                if key == "\x13":
+                if key == "\x13" or key in ENTER_KEYS:
                     return self.editor["text"].strip()
                 self.editor["text"], self.editor["cursor"] = edit_text(self.editor["text"], self.editor["cursor"], key)
         finally:
@@ -516,8 +576,8 @@ class UI:
             return
         self.store.put(self.repo_key, "ui", {"scope": self.review.scope, "base": self.review.base,
             "target": self.review.target, "whole": self.review.whole, "commit_index": self.review.commit_index,
-            "file": self.file.path if self.file else None, "cursor": self.cursor,
-            "navigator": self.navigator})
+            "file": self.file.path if self.file else None, "cursor": self.cursor, "cursor_row": self.cursor_row,
+            "navigator": self.navigator, "wrap": self.wrap})
 
     def switch(self, scope, target=None, base=None):
         candidate = Review(self.repo, self.store, scope, base if base is not None else self.review.base,
@@ -548,13 +608,19 @@ class UI:
             self.file_index = min(max(0, self.file_index + delta), max(0, len(self.view.files) - 1))
             self.load_file()
 
-    def move(self, delta):
+    def move(self, delta, visual=False):
         if self.focus == "files":
             self.move_file(delta)
         elif self.focus == "commits":
             self.move_commit(delta)
+        elif visual:
+            layout = self.line_layout()
+            if layout.rows:
+                target = min(max(0, layout.position(self.cursor, self.cursor_row) + delta), len(layout.rows) - 1)
+                self.cursor, self.cursor_row, _ = layout.rows[target]
         else:
             self.cursor = min(max(0, self.cursor + delta), max(0, len(self.lines) - 1))
+            self.cursor_row = 0
 
     def edit_comment(self, comment=None, file_level=False):
         if not self.file:
@@ -573,7 +639,7 @@ class UI:
                 self.store.add(self.repo_key, anchor, body)
             self.selection = None
             self.comments = self.store.comments(self.repo_key)
-            self.message = "Comment saved · s/S sends to agent · P posts whole-PR drafts to GitHub"
+            self.message = "Comment saved · s/S sends to agent · P posts PR drafts to GitHub"
 
     def deliver(self, mode, ids=None):
         if not self.origin:
@@ -586,8 +652,8 @@ class UI:
     def post_to_github(self, ids=None):
         pr = self.store.comment(ids[0])["anchor"].get("pr") if ids else self.view.pr if self.view else None
         if not pr:
-            raise HuicrError("Open a GitHub PR (o), switch to its whole diff (m), and add comments to publish.")
-        self.busy("Posting whole-PR comments to GitHub…")
+            raise HuicrError("Open a GitHub PR (o) and add comments to publish.")
+        self.busy("Posting PR comments to GitHub…")
         url = publish(self.repo, self.store, pr["url"], ids)
         self.comments = self.store.comments(self.repo_key)
         self.message = f"GitHub review: {url}"
@@ -673,7 +739,7 @@ class UI:
             answer = self.prompt("After checking the PR, type 'retry' to allow another post (Esc keeps it pending)")
             if answer == "retry":
                 url = reconcile_publication(self.repo, self.store, delivery["pr"], retry=True)
-                self.message = f"GitHub review recovered: {url}" if url else "Retry enabled. P posts the unpublished whole-PR comments."
+                self.message = f"GitHub review recovered: {url}" if url else "Retry enabled. P posts the unpublished PR comments."
         self.comments = self.store.comments(self.repo_key)
 
     def search(self, backwards=False):
@@ -684,6 +750,7 @@ class UI:
             index = (self.cursor + offset * direction) % len(self.lines)
             if self.query.casefold() in self.lines[index].text.casefold():
                 self.cursor = index
+                self.cursor_row = self.line_layout().match_part(index, self.query)
                 self.focus = "diff"
                 return
         self.message = f"Not found: {self.query}"
@@ -698,9 +765,9 @@ class UI:
         elif key in ("k", curses.KEY_UP):
             self.move(-1)
         elif key in ("\x04", curses.KEY_NPAGE):
-            self.move(max(1, (self.screen.getmaxyx()[0] - 8) // 2))
+            self.move(max(1, (self.screen.getmaxyx()[0] - 8) // 2), visual=True)
         elif key in ("\x15", curses.KEY_PPAGE):
-            self.move(-max(1, (self.screen.getmaxyx()[0] - 8) // 2))
+            self.move(-max(1, (self.screen.getmaxyx()[0] - 8) // 2), visual=True)
         elif key in ("g", curses.KEY_HOME):
             self.move(-10000000)
         elif key in ("G", curses.KEY_END):
@@ -710,10 +777,15 @@ class UI:
             self.focus = focuses[(focuses.index(self.focus) + 1) % len(focuses)]
         elif key in ("\n", "\r", curses.KEY_ENTER):
             self.focus = "diff"
-        elif key in ("h", curses.KEY_LEFT):
-            self.horizontal = max(0, self.horizontal - 8)
-        elif key in ("l", curses.KEY_RIGHT):
-            self.horizontal += 8
+        elif key in ("h", "l", curses.KEY_LEFT, curses.KEY_RIGHT):
+            if self.wrap:
+                self.message = "Text wrapping is on · w turns it off for horizontal scrolling"
+            else:
+                self.horizontal = max(0, self.horizontal + (-8 if key in ("h", curses.KEY_LEFT) else 8))
+        elif key == "w":
+            self.wrap = not self.wrap
+            self.cursor_row = self.top = self.horizontal = 0
+            self.message = "Text wrapping on" if self.wrap else "Text wrapping off · h/l scroll horizontally"
         elif key in ("u", "U", "i", "b", "t"):
             self.switch({"u": "unstaged", "U": "worktree", "i": "staged", "b": "branch", "t": "turn"}[key])
         elif key == "B":
@@ -741,6 +813,7 @@ class UI:
             direction = -1 if key == "[" else 1
             indices = range(self.cursor + 1, len(self.lines)) if direction == 1 else range(self.cursor - 1, -1, -1)
             self.cursor = next((i for i in indices if self.lines[i].kind == "hunk"), self.cursor)
+            self.cursor_row = 0
             self.focus = "diff"
         elif key == "v":
             self.selection = self.cursor if self.selection is None else None
@@ -804,6 +877,7 @@ class UI:
                 self.file_index = next((i for i, f in enumerate(self.view.files) if f.path == saved.get("file")), 0)
                 self.load_file()
                 self.cursor = min(saved.get("cursor", 0), max(0, len(self.lines) - 1))
+                self.cursor_row = saved.get("cursor_row", 0) if self.wrap else 0
         except HuicrError as e:
             self.message = str(e)
         previous = signal.getsignal(signal.SIGTERM)
@@ -847,6 +921,12 @@ def launch(review, config, saved=None):
     changed[0] &= ~(termios.IXON | termios.IXOFF)
     termios.tcsetattr(fd, termios.TCSANOW, changed)
     try:
-        curses.wrapper(lambda screen: UI(screen, review, config).loop(saved))
+        def run(screen):
+            curses.nonl()  # Preserve pasted CRLF so it can be normalized once.
+            ui = UI(screen, review, config)
+            screen.refresh()  # Enter the alternate screen before changing modes.
+            with enhanced_input(sys.stdout):
+                ui.loop(saved)
+        curses.wrapper(run)
     finally:
         termios.tcsetattr(fd, termios.TCSANOW, settings)

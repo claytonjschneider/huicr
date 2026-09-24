@@ -1,5 +1,6 @@
 import errno
 import fcntl
+from functools import partial
 import json
 import os
 from pathlib import Path
@@ -11,8 +12,75 @@ import sys
 import termios
 import textwrap
 import time
+import unittest
+from unittest.mock import Mock, patch
 
 from test_review import RepositoryFixture
+
+
+def wait_for_terminal(master, process, output, predicate, timeout=10):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if select.select([master], [], [], 0.05)[0]:
+            try:
+                chunk = os.read(master, 65536)
+            except OSError as e:
+                if e.errno != errno.EIO:
+                    raise
+                chunk = b""  # Linux reports EIO at PTY EOF.
+            output.extend(chunk)
+            if not chunk:
+                # Reap first, then check the predicate. The child can exit
+                # between these checks, so polling after a false predicate
+                # must not turn a successful exit into an early failure.
+                exited = process.poll() is not None
+                if predicate():
+                    return
+                if exited:
+                    break
+                time.sleep(0.01)  # EOF stays readable while exit is pending.
+                continue
+        if predicate():
+            return
+    raise AssertionError(f"UI did not reach expected state; exit={process.poll()} output={output[-3000:]!r}")
+
+
+class TerminalWaitTest(unittest.TestCase):
+    def test_exit_between_eof_polls_satisfies_the_exit_predicate(self):
+        for eof in (OSError(errno.EIO, "PTY closed"), b""):
+            with self.subTest(eof=eof):
+                process = Mock()
+                process.poll.side_effect = [None, 0, 0]
+                with patch("test_terminal.select.select", return_value=([3], [], [])), \
+                     patch("test_terminal.os.read", side_effect=[eof, eof]):
+                    wait_for_terminal(3, process, bytearray(), lambda: process.poll() is not None)
+
+    def test_eof_before_exit_keeps_waiting(self):
+        process = Mock()
+        process.poll.side_effect = [None, None, None, 0]
+        with patch("test_terminal.select.select", return_value=([3], [], [])), \
+             patch("test_terminal.os.read", side_effect=OSError(errno.EIO, "PTY closed")), \
+             patch("test_terminal.time.sleep"):
+            wait_for_terminal(3, process, bytearray(), lambda: process.poll() is not None)
+
+    def test_exit_without_the_expected_output_still_fails(self):
+        process = Mock()
+        process.poll.return_value = 0
+        for eof in (OSError(errno.EIO, "PTY closed"), b""):
+            with self.subTest(eof=eof), \
+                 patch("test_terminal.select.select", return_value=([3], [], [])), \
+                 patch("test_terminal.os.read", side_effect=[eof]):
+                with self.assertRaisesRegex(AssertionError, "UI did not reach expected state; exit=0"):
+                    wait_for_terminal(3, process, bytearray(), lambda: False)
+
+    def test_buffered_output_is_drained_after_exit(self):
+        process = Mock()
+        process.poll.return_value = 0
+        output = bytearray()
+        with patch("test_terminal.select.select", return_value=([3], [], [])), \
+             patch("test_terminal.os.read", side_effect=[b"initial", b"finished"]):
+            wait_for_terminal(3, process, output, lambda: b"finished" in output)
+        self.assertEqual(output, b"initialfinished")
 
 
 class TerminalTest(RepositoryFixture):
@@ -34,29 +102,7 @@ class TerminalTest(RepositoryFixture):
             process.wait()
         self.addCleanup(stop)
         output = bytearray()
-
-        def wait_for(predicate, timeout=10):
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                if select.select([master], [], [], 0.05)[0]:
-                    try:
-                        output.extend(os.read(master, 65536))
-                    except OSError as e:
-                        if e.errno != errno.EIO:
-                            raise
-                        # Linux reports EIO at PTY EOF, sometimes just before
-                        # waitpid observes the child's exit. Check the expected
-                        # outcome before treating it as an early failure.
-                        if predicate():
-                            return
-                        if process.poll() is not None:
-                            break
-                        continue
-                if predicate():
-                    return
-            self.fail(f"UI did not reach expected state; exit={process.poll()} output={output[-3000:]!r}")
-
-        return master, process, output, wait_for
+        return master, process, output, partial(wait_for_terminal, master, process, output)
 
     def test_interactive_comment_save_blame_and_reopen(self):
         self.write("file.txt", "review this line\nsecond\nthird\n")
@@ -75,7 +121,7 @@ class TerminalTest(RepositoryFixture):
         output.clear()
         os.write(master, b"C")
         wait_for(lambda: b"Enter newline" in output)
-        os.write(master, "Please handle Unicode π\nAnd this second line\x13".encode())
+        os.write(master, "Please handle Unicode π\x1b[13;2uAnd this second line\x13".encode())
         wait_for(lambda: bool(self.store.comments(str(self.root))))
         comments = self.store.comments(str(self.root))
         self.assertEqual(comments[0]["body"], "Please handle Unicode π\nAnd this second line")
@@ -89,6 +135,78 @@ class TerminalTest(RepositoryFixture):
         wait_for(lambda: process.poll() is not None)
         self.assertEqual(process.returncode, 0)
         self.assertEqual(self.store.comments(str(self.root))[0]["body"], comments[0]["body"])
+
+    def test_modified_keys_finish_comments_and_work_in_search(self):
+        self.write("file.txt", "review this line\nsecond\nthird\n")
+        master, process, output, wait_for = self.start_ui()
+        wait_for(lambda: b"review this line" in output)
+        os.write(master, b"C")
+        wait_for(lambda: b"Enter finish" in output)
+        os.write(master, b"Please remove wrong\x1b\x7fword\x1b[13;2uSecond line junk\x1b[127;3ukept\x1b[13u")
+        wait_for(lambda: bool(self.store.comments(str(self.root))))
+        self.assertEqual(self.store.comments(str(self.root))[0]["body"], "Please remove word\nSecond line kept")
+        os.write(master, b"/")
+        wait_for(lambda: b"Find in diff" in output)
+        os.write(master, b"review junk\x1b\x7fthis\r")
+        wait_for(lambda: self.store.get(str(self.root), "ui", {}).get("cursor", 0) > 0)
+        output.clear()
+        os.write(master, b"c")
+        wait_for(lambda: b"Enter finish" in output)
+        os.write(master, b"Found the intended line\r")
+        wait_for(lambda: len(self.store.comments(str(self.root))) == 2)
+        self.assertEqual(self.store.comments(str(self.root))[1]["anchor"]["start"], 1)
+        os.write(master, b"q")
+        wait_for(lambda: process.poll() is not None)
+        self.assertEqual(process.returncode, 0)
+
+    def test_multiline_paste_stays_in_the_comment_until_enter_and_modes_are_restored(self):
+        self.write("file.txt", "paste test\nsecond\nthird\n")
+        master, process, output, wait_for = self.start_ui()
+        wait_for(lambda: b"paste test" in output)
+        self.assertIn(b"\x1b[>1u", output)
+        self.assertIn(b"\x1b[?2004h", output)
+        os.write(master, b"C")
+        wait_for(lambda: b"Enter finish" in output)
+        os.write(master, "\x1b[200~First line\r\nSecond line P q\nUnicode π\x1b[201~".encode())
+        wait_for(lambda: "Unicode π".encode() in output)
+        self.assertEqual(self.store.comments(str(self.root)), [])
+        os.write(master, b"\r")
+        wait_for(lambda: bool(self.store.comments(str(self.root))))
+        self.assertEqual(self.store.comments(str(self.root))[0]["body"], "First line\nSecond line P q\nUnicode π")
+        os.write(master, b"q")
+        wait_for(lambda: process.poll() is not None)
+        self.assertEqual(process.returncode, 0)
+        self.assertIn(b"\x1b[?2004l", output)
+        self.assertIn(b"\x1b[<u", output)
+
+    def test_wrapping_defaults_on_and_toggle_survives_reopening_an_explicit_scope(self):
+        self.write("file.txt", "x" * 204 + "WRAPTAIL\nsecond\nthird\n")
+        master, process, output, wait_for = self.start_ui()
+        wait_for(lambda: b"WRAPTAIL" in output)
+        self.assertIn(b"wrap:on", output)
+        review = self.review()
+        lines = self.repo.diff(review.view, review.view.files[0])
+        wrapped_line = next(i for i, line in enumerate(lines) if line.kind == "add")
+        os.write(master, b"j" * wrapped_line)
+        wait_for(lambda: self.store.get(str(self.root), "ui", {}).get("cursor") == wrapped_line)
+        os.write(master, b"j")
+        wait_for(lambda: self.store.get(str(self.root), "ui", {}).get("cursor") == wrapped_line + 1)
+        os.write(master, b"w")
+        wait_for(lambda: b"Text wrapping off" in output)
+        self.assertFalse(self.store.get(str(self.root), "ui")["wrap"])
+        os.write(master, b"q")
+        wait_for(lambda: process.poll() is not None)
+        self.assertEqual(process.returncode, 0)
+
+        master, process, output, wait_for = self.start_ui("--scope", "unstaged")
+        wait_for(lambda: b"wrap:off" in output and b"x" * 20 in output)
+        self.assertNotIn(b"WRAPTAIL", output)
+        os.write(master, b"w")
+        wait_for(lambda: b"WRAPTAIL" in output)
+        self.assertTrue(self.store.get(str(self.root), "ui")["wrap"])
+        os.write(master, b"q")
+        wait_for(lambda: process.poll() is not None)
+        self.assertEqual(process.returncode, 0)
 
     def test_publish_pr_from_terminal_and_cli_with_simulated_github(self):
         self.write("file.txt", "review this PR line\nsecond\nthird\n")
@@ -133,7 +251,7 @@ class TerminalTest(RepositoryFixture):
         environment = {"PATH": str(tools) + os.pathsep + os.environ.get("PATH", ""),
                        "HUICR_TEST_PR": json.dumps(info), "HUICR_TEST_POSTS": str(posts),
                        "HUICR_TEST_FILES": json.dumps([[{"filename": "file.txt", "patch": self.repo.text("diff", self.base, head)}]])}
-        master, process, output, wait_for = self.start_ui(url, "--whole", extra_env=environment)
+        master, process, output, wait_for = self.start_ui(url, extra_env=environment)
         wait_for(lambda: b"review this PR line" in output)
         os.write(master, b"C")
         wait_for(lambda: b"Enter newline" in output)

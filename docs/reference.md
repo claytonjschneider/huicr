@@ -114,7 +114,8 @@ Reviews never check out another branch. PR objects are fetched under `refs/huicr
 | `Tab`, `Enter` | Cycle focus; focus diff |
 | `Ctrl+D` / `Ctrl+U`, PageDown / PageUp | Move a half-page |
 | `g` / `G` | First / last item |
-| `h` / `l` | Horizontal scroll |
+| `w` | Toggle text wrapping (on by default; saved per worktree) |
+| `h` / `l` | Horizontal scroll when wrapping is off |
 | `{` / `}`, `F` / `f` | Previous / next file |
 | `[` / `]` | Previous / next hunk |
 | `/`, `n` / `N` | Find, next / previous match |
@@ -128,11 +129,13 @@ Reviews never check out another branch. PR objects are fetched under `refs/huicr
 
 Blame on a removed line starts on the old side, using the historical filename for renames. Mutable snapshots attribute unchanged lines to history and label new lines `uncommitted`. Comments work from blame too. File content, filenames, and commit messages are rendered as text, including escaped/control characters.
 
+Diff and blame text **wrap to the pane width by default**. Press `w` to toggle wrapping; the choice survives reopening, including when you open an explicit scope or PR. Continuation rows have a `↪` marker. **`j` / `k` and the arrow keys move by source line**, treating every wrapped line as one item. Paging traverses display rows so a source line taller than the pane can still be read. Line numbers, selections, and comment anchors refer to the original source lines. With wrapping off, use `h` / `l` to scroll horizontally. Comment editors always wrap.
+
 ## Comments and the agent loop
 
 1. Move to a line, or press `v` and extend a range.
 2. `c` comments on it; `C` comments on the file.
-3. A bordered paragraph box opens **inline below the selected line**, or below the file header for file comments. It starts with **one editable line**, grows as you type/wrap, and keeps surrounding code visible. **Enter** inserts a newline, **Ctrl+S** saves, **Esc** cancels (25 ms escape-key delay).
+3. A bordered paragraph box opens **inline below the selected line**, or below the file header for file comments. It starts with **one editable line**, grows as you type/wrap, and keeps surrounding code visible. **Enter** saves and finishes, **Shift+Enter** inserts a newline, **Ctrl+S** also saves, and **Esc** cancels (short escape-key delay).
 4. `s` pastes all unsent drafts into the agent's input; **you press Enter there**. `S` submits them immediately.
 5. Continue reviewing. Sending never closes the pane.
 
@@ -144,19 +147,38 @@ Each comment stores its ID/version, scope, commit, old/new trees, filename, side
 
 A durable agent outbox is written **before** transport. A failed/crashed send can have an uncertain outcome because terminal input has no transactional acknowledgement from the agent. Huicr retains the batch and prevents automatic resending. After checking the agent, press `X` and enter `sent` or `retry`. “Sent” means Herdr accepted the input, not that the agent acted on it. Paste-mode feedback is considered delivered once pasted.
 
+### Text entry
+
+Comments, search, revision selection, and other text boxes share these editing keys:
+
+| Key | Action |
+| --- | --- |
+| **Enter** | Finish: save the comment or accept the form |
+| **Shift+Enter** | Insert a newline in a multiline field |
+| **Ctrl+S** | Save / accept as an alternative to Enter |
+| **Esc** | Cancel |
+| **Option/Alt+Backspace**, **Ctrl+W** | Delete the preceding word or punctuation run |
+| **Ctrl+U** / **Ctrl+K** | Delete to the start / end of the current line |
+| **Ctrl+A** / **Ctrl+E**, Home / End | Move to the start / end of the current line |
+| Arrow keys, Backspace, Delete | Move and edit text |
+
+Shift+Enter uses the terminal's modified-key reporting (Kitty/CSI-u or xterm encoding). **Alt+Enter** is also accepted for a newline. Huicr enables extended-key reporting and bracketed paste inside its pane and restores those modes on exit. Multiline pastes stay in the editor until you finish with Enter or Ctrl+S; line endings are normalized and tabs expand to four spaces. Single-line fields convert pasted newlines to spaces.
+
 ### Publishing GitHub reviews
 
-1. Open a GitHub PR with `o` and press **`m`** to view its whole diff.
-2. Use `c` / `v` + `c` for line/range comments, or `C` for a file comment. Save with **Ctrl+S**.
-3. Press **`P`** to publish all unpublished, unresolved whole-PR comments for that PR. In **`L`**, `P` publishes only the selected comment, to the PR recorded with it.
+1. Open a GitHub PR with `o`. Review commit-wise with **`,` / `.`**, or use **`m`** for the whole diff.
+2. Use `c` / `v` + `c` for line/range comments, or `C` for a file comment. Finish with **Enter** or **Ctrl+S**.
+3. Press **`P`** to publish all unpublished, unresolved comments for that PR, including comments from different commits. In **`L`**, `P` publishes only the selected comment, to the PR recorded with it.
 
-Huicr submits a **COMMENT review** at the captured PR head. New-side and old-side line/range comments become native inline review comments. File-level comments appear under filename headings in the review summary; this also supports binary files and files without a text diff. The resulting review URL is shown in the pane and retained with the comments.
+Huicr submits a **COMMENT review** at the captured PR head. New-side and old-side line/range comments become native inline review comments. Commit-wise new-side ranges are mapped from the reviewed commit to the PR head; old-side ranges are mapped from that commit's actual parent back to the PR merge base. Mapping follows file renames and line shifts while requiring the reviewed text to remain unchanged. Inline comments include a link to the reviewed commit.
+
+If later commits replace/delete a reviewed line, insert inside its range, or remove its inline location from GitHub's diff, the comment appears in the review summary with the **original commit, source link, line range, and captured snippet**. File-level comments also appear under filename headings in the summary, including comments on intermediate files absent from the final diff. The resulting review URL is shown in the pane and retained with the comments.
 
 The comment list and inline boxes track **agent draft/sent** and **GitHub draft/posted/edited** independently. A comment sent to the agent is still eligible for GitHub, and publishing it keeps it available for agent delivery. Editing a published comment makes the new version eligible for a **new review**. Local edits, resolution, and deletion do not modify previously published GitHub content.
 
-Only comments captured in a **whole-PR** view are eligible. Commit-wise, branch, and worktree comments keep their local/agent workflow. GitHub posting requires PR metadata saved with the comment; older drafts without that metadata can be recreated in a freshly loaded whole-PR view.
+Comments captured in **commit-wise or whole-PR** views are eligible. Branch and worktree comments keep their local/agent workflow. GitHub posting requires PR metadata saved with the comment; older drafts without that metadata can be recreated in a freshly loaded PR view.
 
-Before posting, huicr verifies that the PR is open and its head and base revisions still match each selected comment. It also verifies that each line/range lies in one actual GitHub diff hunk, since GitHub's context can differ from your local `context_lines`. If the PR has changed, refresh with `r` and recreate stale comments against the new whole-PR diff. All selected comments are validated before publication.
+Before posting, huicr verifies that the PR is open and its head and base revisions still match the PR snapshot saved with each selected comment. Inline ranges must lie in one actual GitHub diff hunk, since GitHub's context can differ from your local `context_lines`. Whole-PR comments outside GitHub's context require selecting another line or using a file comment; commit-wise comments retain their original context in the summary. If the PR has changed, refresh with `r` and recreate stale comments against the new PR snapshot. All selected comments are prepared before publication.
 
 GitHub publication has its own durable outbox containing the exact payload and comment versions. Rejected requests retain the drafts for correction and retry. After a timeout or interruption, **`P` or `X` checks GitHub for the existing review**, identified by a hidden batch marker in its summary. A recovered review is marked posted without resubmitting it. If no matching review is found, check the PR yourself, then use **`X` → `retry`** to permit another attempt; `P` performs that attempt. Recovery also works after the PR advances or closes.
 
@@ -181,7 +203,7 @@ Run the checkout's launcher, or install the optional console entrypoint with `pi
 # Send specific drafts (omit --id for all pending drafts).
 /path/to/huicr/bin/huicr send --to w1:p1 --mode submit --id COMMENT_ID
 
-# Publish whole-PR drafts to GitHub (omit --id to publish all for this PR).
+# Publish PR drafts to GitHub (omit --id to publish all for this PR).
 /path/to/huicr/bin/huicr publish https://github.com/owner/repo/pull/123 --id COMMENT_ID
 ```
 

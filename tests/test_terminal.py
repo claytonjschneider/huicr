@@ -1,5 +1,6 @@
 import errno
 import fcntl
+from functools import partial
 import json
 import os
 from pathlib import Path
@@ -11,8 +12,75 @@ import sys
 import termios
 import textwrap
 import time
+import unittest
+from unittest.mock import Mock, patch
 
 from test_review import RepositoryFixture
+
+
+def wait_for_terminal(master, process, output, predicate, timeout=10):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if select.select([master], [], [], 0.05)[0]:
+            try:
+                chunk = os.read(master, 65536)
+            except OSError as e:
+                if e.errno != errno.EIO:
+                    raise
+                chunk = b""  # Linux reports EIO at PTY EOF.
+            output.extend(chunk)
+            if not chunk:
+                # Reap first, then check the predicate. The child can exit
+                # between these checks, so polling after a false predicate
+                # must not turn a successful exit into an early failure.
+                exited = process.poll() is not None
+                if predicate():
+                    return
+                if exited:
+                    break
+                time.sleep(0.01)  # EOF stays readable while exit is pending.
+                continue
+        if predicate():
+            return
+    raise AssertionError(f"UI did not reach expected state; exit={process.poll()} output={output[-3000:]!r}")
+
+
+class TerminalWaitTest(unittest.TestCase):
+    def test_exit_between_eof_polls_satisfies_the_exit_predicate(self):
+        for eof in (OSError(errno.EIO, "PTY closed"), b""):
+            with self.subTest(eof=eof):
+                process = Mock()
+                process.poll.side_effect = [None, 0, 0]
+                with patch("test_terminal.select.select", return_value=([3], [], [])), \
+                     patch("test_terminal.os.read", side_effect=[eof, eof]):
+                    wait_for_terminal(3, process, bytearray(), lambda: process.poll() is not None)
+
+    def test_eof_before_exit_keeps_waiting(self):
+        process = Mock()
+        process.poll.side_effect = [None, None, None, 0]
+        with patch("test_terminal.select.select", return_value=([3], [], [])), \
+             patch("test_terminal.os.read", side_effect=OSError(errno.EIO, "PTY closed")), \
+             patch("test_terminal.time.sleep"):
+            wait_for_terminal(3, process, bytearray(), lambda: process.poll() is not None)
+
+    def test_exit_without_the_expected_output_still_fails(self):
+        process = Mock()
+        process.poll.return_value = 0
+        for eof in (OSError(errno.EIO, "PTY closed"), b""):
+            with self.subTest(eof=eof), \
+                 patch("test_terminal.select.select", return_value=([3], [], [])), \
+                 patch("test_terminal.os.read", side_effect=[eof]):
+                with self.assertRaisesRegex(AssertionError, "UI did not reach expected state; exit=0"):
+                    wait_for_terminal(3, process, bytearray(), lambda: False)
+
+    def test_buffered_output_is_drained_after_exit(self):
+        process = Mock()
+        process.poll.return_value = 0
+        output = bytearray()
+        with patch("test_terminal.select.select", return_value=([3], [], [])), \
+             patch("test_terminal.os.read", side_effect=[b"initial", b"finished"]):
+            wait_for_terminal(3, process, output, lambda: b"finished" in output)
+        self.assertEqual(output, b"initialfinished")
 
 
 class TerminalTest(RepositoryFixture):
@@ -34,29 +102,7 @@ class TerminalTest(RepositoryFixture):
             process.wait()
         self.addCleanup(stop)
         output = bytearray()
-
-        def wait_for(predicate, timeout=10):
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                if select.select([master], [], [], 0.05)[0]:
-                    try:
-                        output.extend(os.read(master, 65536))
-                    except OSError as e:
-                        if e.errno != errno.EIO:
-                            raise
-                        # Linux reports EIO at PTY EOF, sometimes just before
-                        # waitpid observes the child's exit. Check the expected
-                        # outcome before treating it as an early failure.
-                        if predicate():
-                            return
-                        if process.poll() is not None:
-                            break
-                        continue
-                if predicate():
-                    return
-            self.fail(f"UI did not reach expected state; exit={process.poll()} output={output[-3000:]!r}")
-
-        return master, process, output, wait_for
+        return master, process, output, partial(wait_for_terminal, master, process, output)
 
     def test_interactive_comment_save_blame_and_reopen(self):
         self.write("file.txt", "review this line\nsecond\nthird\n")

@@ -47,7 +47,7 @@ herdr plugin action invoke toggle --plugin claytonjschneider.huicr
 `herdr plugin config-dir claytonjschneider.huicr` prints the configuration directory. Put `config.toml` there; see [config.toml.example](../config.toml.example).
 
 ```toml
-placement = "tab"         # split | zoomed | tab
+placement = "tab"         # tab (default) | split | zoomed
 direction = "right"       # right | down, for splits
 default_scope = "unstaged"
 context_lines = 5
@@ -55,7 +55,7 @@ max_file_bytes = 2000000
 track_turns = true
 ```
 
-`tab` opens a dedicated **huicr** tab. Toggle closes it; the next toggle reopens your saved review. One managed review pane is opened per workspace. Its comments, selected scope, commit, file, and position survive closing. Settings are read when an action/pane/event starts.
+`tab` is the default and opens a dedicated **huicr** tab. An explicit `placement = "split"` or `"zoomed"` selects that layout instead. Toggle closes the review; the next toggle reopens your saved review. One managed review pane is opened per workspace. Its comments, selected scope, commit, file, and position survive closing. Settings are read when an action/pane/event starts.
 
 ### Shell command
 

@@ -288,21 +288,21 @@ class RepositoryTest(RepositoryFixture):
         self.assertEqual(len(self.store.comments(str(self.root), pending=True)), 1)
         self.assertEqual(self.store.deliveries(str(self.root))[0]["status"], "uncertain")
 
-    def test_tab_action_preserves_exact_origin_and_toggle_ownership(self):
+    def test_default_tab_action_preserves_exact_origin_and_toggle_ownership(self):
         pane = {"pane_id": "w1:p1", "terminal_id": "agent-terminal", "agent": "opencode",
                 "workspace_id": "w1", "foreground_cwd": str(self.root)}
         opened = {"pane_id": "w1:p5", "terminal_id": "review-terminal", "tab_id": "w1:t2"}
         with patch.dict(os.environ, {"HERDR_PANE_ID": "w1:p1", "HERDR_PLUGIN_CONTEXT_JSON": "{}"}), \
              patch("huicr.herdr.call", side_effect=[{"pane": pane}, {"panes": [pane]},
                   {"plugin_pane": {"pane": opened}}, {}]) as api:
-            action("open", self.store, Config(placement="tab"), focus=False)
+            action("open", self.store, Config(), focus=False)
             open_args = api.call_args_list[2].args
             self.assertIn("tab", open_args)
             self.assertIn("--no-focus", open_args)
             self.assertTrue(any("HUICR_ORIGIN=" in arg and "w1:p1" in arg for arg in open_args))
         with patch.dict(os.environ, {"HERDR_PANE_ID": "w1:p1", "HERDR_PLUGIN_CONTEXT_JSON": "{}"}), \
              patch("huicr.herdr.call", side_effect=[{"pane": pane}, {"panes": [pane, opened]}, {}]) as api:
-            action("toggle", self.store, Config(placement="tab"))
+            action("toggle", self.store, Config())
             self.assertEqual(api.call_args_list[-1].args, ("plugin", "pane", "close", "w1:p5"))
 
     def test_event_tracking_ignores_stale_hooks(self):

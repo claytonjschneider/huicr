@@ -26,7 +26,7 @@ def config_path() -> Path:
 
 @dataclass
 class Config:
-    placement: str = "split"
+    placement: str = "tab"
     direction: str = "right"
     default_scope: str = "unstaged"
     context_lines: int = 5

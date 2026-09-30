@@ -32,7 +32,7 @@ command = ["sh", "bin/huicr", "action", "open"]
 [[panes]]
 id = "review"
 title = "huicr"
-placement = "split"
+placement = "tab"
 command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/bin/huicr\" review"]
 
 [[events]]

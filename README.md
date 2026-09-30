@@ -25,7 +25,7 @@ command = "claytonjschneider.huicr.toggle"
 description = "huicr: toggle review"
 ```
 
-Prefer a dedicated tab? Set `placement = "tab"` in the plugin's `config.toml`. Find its directory with `herdr plugin config-dir claytonjschneider.huicr`; see the [example config](config.toml.example).
+Reviews open in a dedicated **huicr** tab by default. For a split, set `placement = "split"` in the plugin's `config.toml`. Find its directory with `herdr plugin config-dir claytonjschneider.huicr`; see the [example config](config.toml.example).
 
 ## Review
 

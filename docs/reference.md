@@ -96,7 +96,7 @@ Publishing reviews also requires permission to comment on the PR. Fine-grained t
 | `b` | Branch | Merge-base with the selected comparator → branch tip |
 | `t` | Turn | Captured worktree at turn start → captured end, or current worktree while running |
 | `y` | History | Full ancestry of HEAD, including root and merged-branch commits; newest first |
-| `o` | Open | A branch, SHA, `BASE..HEAD`, `BASE...HEAD`, or GitHub PR URL/number |
+| `o` | Open | A branch, SHA, `BASE..HEAD`, `BASE...HEAD`, GitHub PR URL/number, or file/directory history |
 | `B` | Comparator | Any local/remote branch, tag, or revision; saved per worktree |
 
 Branch/range/PR reviews start **commit-wise**. `,` and `.` step through commits; `m` toggles the aggregate diff. `Tab` can focus the commit list, file list, or diff. Every commit is diffed against its **actual first parent**, including merge commits; root commits are diffed against the empty tree. Branch history follows the first-parent chain in oldest-first order. PR commit lists use GitHub's paginated commit API.
@@ -110,6 +110,8 @@ Reviews never check out another branch. PR objects are fetched under `refs/huicr
 ### Full history and file history
 
 **`y`** opens HEAD's full history. **`M`** toggles merge commits in this scope, retaining the captured history until **`r`** refreshes it. History traverses **all parents** and lists commits newest-first in topological order (children before parents), including the individual commits brought in by merges. Each displayed diff uses the commit's **actual first parent**, even when that parent is hidden by a filter; root commits use the empty tree.
+
+To open a file's history from an existing review, press **`o`** and enter its path. The prompt accepts one literal file or directory path, including spaces without shell quoting, relative to the **repository root** (or an absolute path within it). Deleted paths work too. A path opens history from **HEAD** and retains the current history merge-filter setting. If the name is also a revision or PR number, enter **`-- PATH`** to force file history. Press **`M`** to hide/show merges.
 
 Both `review` (standalone) and `open` (Herdr) accept:
 

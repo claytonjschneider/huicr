@@ -8,7 +8,7 @@ from . import VERSION
 from .config import Config, HuicrError
 from .git import Repo
 from .herdr import action, call, capture_turn, event, identity, send
-from .review import Review
+from .review import Review, detect_target, resolve_target
 from .state import Store, format_comments
 
 
@@ -73,29 +73,12 @@ def parse_args(argv=None):
 
 
 def review_request(args, repo=None):
-    from .ui import detect_target
-
-    target, paths = args.target, list(args.paths)
     cwd = args.repo if args.command == "review" else os.getcwd()
-    if target and repo and not args.path_separator and args.scope in (None, "history"):
-        # Preserve revision/PR targets; a bare existing or historical path is a
-        # shortcut for HEAD's file history. -- always forces a path interpretation.
-        is_pr = args.scope != "history" and not args.no_merges and (target.startswith("https://") or target.isdigit())
-        if not is_pr and repo.git("rev-parse", "--verify", "--quiet", "--end-of-options",
-                                  f"{target}^{{commit}}", check=False).returncode:
-            path = repo.relative_paths([target], cwd)[0]
-            if repo.has_path(path):
-                paths.insert(0, target)
-                target = None
-    scope = args.scope or ("history" if paths or args.no_merges else detect_target(target) if target else None)
-    if scope != "history" and (paths or args.no_merges):
-        raise HuicrError("File paths and --no-merges require history scope (--history)")
-    if paths:
-        if repo is None:
-            raise HuicrError("Run file history from inside the repository")
-        paths = repo.relative_paths(paths, cwd)
-    return {key: value for key, value in {"scope": scope, "target": target, "base": args.base,
-                                        "paths": paths, "no_merges": args.no_merges}.items() if value}
+    request = resolve_target(repo, args.target, paths=args.paths, scope=args.scope, no_merges=args.no_merges,
+                             cwd=cwd, path_separator=args.path_separator)
+    if args.base:
+        request["base"] = args.base
+    return request
 
 
 def main():
@@ -146,7 +129,7 @@ def main():
         elif args.command == "review":
             if not sys.stdin.isatty() or not sys.stdout.isatty():
                 raise HuicrError("Review needs an interactive terminal. Use `huicr open` inside Herdr or `huicr comments` for JSON.")
-            from .ui import detect_target, launch
+            from .ui import launch
             repo = Repo(args.repo)
             origin = json.loads(os.environ.get("HUICR_ORIGIN", "null"))
             if not origin and os.environ.get("HERDR_ENV") == "1" and os.environ.get("HERDR_PANE_ID"):

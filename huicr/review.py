@@ -4,6 +4,38 @@ from .config import HuicrError
 from .git import Repo, View
 
 
+def detect_target(text):
+    if text.startswith("https://") or text.isdigit():
+        return "pr"
+    if ".." in text or (len(text) >= 7 and all(c in "0123456789abcdefABCDEF" for c in text)):
+        return "range"
+    return "branch"
+
+
+def resolve_target(repo, target=None, *, paths=None, scope=None, no_merges=False, cwd=None, path_separator=False):
+    """Share literal path/ref resolution between the CLI and the Open prompt."""
+    paths = list(paths or [])
+    if target and repo and not path_separator and scope in (None, "history"):
+        # Preserve revision/PR targets; a bare existing or historical path is a
+        # shortcut for HEAD's file history. -- always forces a path interpretation.
+        is_pr = scope != "history" and not no_merges and (target.startswith("https://") or target.isdigit())
+        if not is_pr and repo.git("rev-parse", "--verify", "--quiet", "--end-of-options",
+                                  f"{target}^{{commit}}", check=False).returncode:
+            path = repo.relative_paths([target], cwd)[0]
+            if repo.has_path(path):
+                paths.insert(0, target)
+                target = None
+    scope = scope or ("history" if paths or no_merges else detect_target(target) if target else None)
+    if scope != "history" and (paths or no_merges):
+        raise HuicrError("File paths and --no-merges require history scope (--history)")
+    if paths:
+        if repo is None:
+            raise HuicrError("Run file history from inside the repository")
+        paths = repo.relative_paths(paths, cwd)
+    return {key: value for key, value in {"scope": scope, "target": target,
+                                        "paths": paths, "no_merges": no_merges}.items() if value}
+
+
 class Review:
     def __init__(self, repo: Repo, store, scope="unstaged", base=None, target=None, origin=None, *, paths=None, no_merges=False):
         self.repo, self.store = repo, store

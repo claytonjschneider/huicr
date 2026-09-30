@@ -251,6 +251,33 @@ class TerminalTest(RepositoryFixture):
         saved = self.store.get(str(self.root), "ui")
         self.assertEqual((saved["scope"], saved["paths"], saved["no_merges"]), ("history", [], False))
 
+    def test_open_prompt_switches_an_existing_review_to_file_history(self):
+        path = "src/with spaces π.txt"
+        self.write(path, "COMMITTED_FILE_HISTORY\n")
+        tip = self.commit("file history")
+        self.write(path, "UNSTAGED_FILE_CONTENT\n")
+        master, process, output, wait_for = self.start_ui()
+        wait_for(lambda: b"UNSTAGED_FILE_CONTENT" in output)
+        output.clear()
+        os.write(master, b"o")
+        wait_for(lambda: b"file path" in output)
+        os.write(master, (path + "\r").encode())
+        wait_for(lambda: self.store.get(str(self.root), "ui", {}).get("paths") == [path]
+                 and tip[:7].encode() in output)
+        saved = self.store.get(str(self.root), "ui")
+        self.assertEqual((saved["scope"], saved["target"]), ("history", "HEAD"))
+        os.write(master, b"M")
+        wait_for(lambda: self.store.get(str(self.root), "ui")["no_merges"] is True)
+        output.clear()
+        os.write(master, b"o")
+        wait_for(lambda: b"file path" in output)
+        os.write(master, b"-- file.txt\r")
+        wait_for(lambda: self.store.get(str(self.root), "ui", {}).get("paths") == ["file.txt"])
+        self.assertTrue(self.store.get(str(self.root), "ui")["no_merges"])
+        os.write(master, b"q")
+        wait_for(lambda: process.poll() is not None)
+        self.assertEqual(process.returncode, 0)
+
     def test_publish_pr_from_terminal_and_cli_with_simulated_github(self):
         self.write("file.txt", "review this PR line\nsecond\nthird\n")
         head = self.commit("PR change")

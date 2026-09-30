@@ -2,12 +2,13 @@ from contextlib import chdir
 import io
 import os
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from huicr.cli import main, parse_args, review_request
 from huicr.config import Config, HuicrError
 from huicr.git import Repo
 from huicr.review import Review
+from huicr.ui import UI
 from test_review import RepositoryFixture
 
 
@@ -228,3 +229,80 @@ class HistoryCLITest(RepositoryFixture):
             main()
         self.assertEqual(action.call_args.args[3], {"scope": "history", "paths": ["file.txt"], "no_merges": True})
         self.assertFalse(action.call_args.kwargs["focus"])
+
+
+class OpenHistoryTest(RepositoryFixture):
+    def make_ui(self, scope="unstaged", **kwargs):
+        screen = Mock()
+        screen.getmaxyx.return_value = 35, 110
+        with patch("huicr.ui.curses.curs_set"), patch("huicr.ui.curses.set_escdelay"), patch("huicr.ui.Theme") as theme:
+            theme.return_value.pairs = {}
+            ui = UI(screen, self.review(scope, **kwargs), Config())
+        ui.load_file()
+        return ui
+
+    def test_open_literal_file_and_directory_paths_relative_to_the_reviewed_repo(self):
+        path = "src/with spaces π.txt"
+        self.write(path, "file history\n")
+        tip = self.commit("file history change")
+        self.write("other", "unrelated\n")
+        self.commit("unrelated change")
+        ui = self.make_ui()
+        for target in (path, str(self.root / path), "src/"):
+            with self.subTest(target=target), chdir(self.temp.name):
+                ui.open_target(target)
+                self.assertEqual(ui.review.scope, "history")
+                self.assertEqual(ui.review.target, "HEAD")
+                self.assertEqual([c.oid for c in ui.review.commits], [tip])
+                self.assertEqual([f.path for f in ui.view.files], [path])
+                self.assertIn("file history", [line.text for line in ui.lines])
+
+    def test_open_deleted_path_and_force_history_for_ambiguous_names(self):
+        self.git("rm", "file.txt")
+        deleted = self.commit("delete")
+        ui = self.make_ui()
+        ui.open_target("file.txt")
+        self.assertEqual(ui.view.commit, deleted)
+        self.assertEqual(ui.file.status, "D")
+        self.git("branch", "file.txt")
+        with patch.object(ui, "switch") as switch:
+            ui.open_target("file.txt")
+            switch.assert_called_once_with(scope="branch", target="file.txt")
+        ui.open_target("-- file.txt")
+        self.assertEqual(ui.review.paths, ["file.txt"])
+        self.assertEqual(ui.view.commit, deleted)
+        ui.open_target("-- missing file")
+        self.assertEqual(ui.review.paths, ["missing file"])
+        self.assertEqual(ui.review.commits, [])
+        self.assertIn("No commits match", ui.view.label)
+
+    def test_open_another_file_keeps_the_history_merge_filter(self):
+        self.git("switch", "-c", "feature")
+        self.write("file.txt", "feature\n")
+        feature = self.commit("feature change")
+        self.git("switch", "main")
+        self.git("merge", "--no-ff", "feature", "-m", "merge feature")
+        ui = self.make_ui("history", no_merges=True)
+        ui.open_target("file.txt")
+        self.assertTrue(ui.review.no_merges)
+        self.assertEqual([c.oid for c in ui.review.commits], [feature, self.base])
+        ui.save_ui()
+        saved = self.store.get(str(self.root), "ui")
+        self.assertEqual((saved["scope"], saved["paths"], saved["no_merges"]), ("history", ["file.txt"], True))
+
+    def test_open_refs_and_prs_keeps_their_original_scopes(self):
+        ui = self.make_ui("history", no_merges=True)
+        for target, scope in (("main", "branch"), (self.base, "range"), ("main..HEAD", "range"),
+                              ("42", "pr"), ("https://github.com/example/repo/pull/42", "pr")):
+            with self.subTest(target=target), patch.object(ui, "switch") as switch:
+                ui.open_target(target)
+                switch.assert_called_once_with(scope=scope, target=target)
+
+    def test_bad_open_requests_leave_the_current_review_intact(self):
+        ui = self.make_ui("history")
+        previous = ui.review
+        for target in ("--", "-- ../outside", "missing-revision"):
+            with self.subTest(target=target), self.assertRaises(HuicrError):
+                ui.open_target(target)
+            self.assertIs(ui.review, previous)
+            self.assertEqual(ui.view.commit, self.base)

@@ -11,7 +11,7 @@ from .git import DiffLine
 from .github import publish, reconcile_publication
 from .herdr import call, identity, repo_for_pane, send
 from .keys import ENTER_KEYS, SHIFT_ENTER, KeyReader, Paste, enhanced_input
-from .review import Review
+from .review import Review, resolve_target
 from .theme import Theme
 
 
@@ -22,7 +22,8 @@ Scopes
   i  staged                    b  branch (commits first)
   t  last agent turn           B  choose comparator / base
   y  full history (HEAD)       M  hide / show merges in history
-  o  open branch, SHA, BASE..HEAD, BASE...HEAD, or GitHub PR URL
+  o  open branch, SHA, BASE..HEAD, BASE...HEAD, GitHub PR, or file path
+     File/directory history: path/to/file or -- PATH (relative to repo root)
   m  whole range / commit      , .  previous / next commit
 
 Navigation
@@ -124,14 +125,6 @@ class LineLayout:
                 return part
             offset -= len(text.casefold())
         return 0
-
-
-def detect_target(text):
-    if text.startswith("https://") or text.isdigit():
-        return "pr"
-    if ".." in text or (len(text) >= 7 and all(c in "0123456789abcdefABCDEF" for c in text)):
-        return "range"
-    return "branch"
 
 
 def comment_status(comment):
@@ -390,7 +383,7 @@ class UI:
         if self.review.scope == "history":
             self.put(1, 0, f" y history  M merges:{'hidden' if self.review.no_merges else 'shown'}  ·  {self.review.source}")
         else:
-            self.put(1, 0, f" u unstaged  b branch  y history  t turn  o range/PR  B base: {self.review.base or 'auto'}")
+            self.put(1, 0, f" u unstaged  b branch  y history  t turn  o open  B base: {self.review.base or 'auto'}")
         label = self.view.label if self.view else "No review loaded — choose a scope or comparator"
         if self.review.commits:
             label = f"[{self.review.commit_index + 1}/{len(self.review.commits)}] " + label
@@ -597,7 +590,13 @@ class UI:
         self.message = "Commit-wise review · ,/. step commits · m toggles whole range" if candidate.commits else "Review loaded"
 
     def open_target(self, target):
-        self.switch(detect_target(target), target)
+        paths = None
+        if target == "--" or target.startswith("-- "):
+            paths, target = [target[2:].strip()], None
+        request = resolve_target(self.repo, target, paths=paths, path_separator=paths is not None)
+        if request["scope"] == "history":
+            request["no_merges"] = self.review.no_merges
+        self.switch(**request)
 
     def move_commit(self, delta):
         if not self.review.commits:
@@ -808,7 +807,7 @@ class UI:
                 self.review.base = answer
                 self.switch("branch", self.review.target if self.review.scope == "branch" else "HEAD", answer)
         elif key == "o":
-            target = self.prompt("Open branch, commit, BASE..HEAD, BASE...HEAD, or GitHub PR URL")
+            target = self.prompt("Open branch, commit, range, PR, or file path (-- PATH forces history)")
             if target:
                 self.open_target(target)
         elif key == "m" and self.review.scope in ("branch", "range", "pr", "history"):

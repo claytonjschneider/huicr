@@ -34,7 +34,7 @@ Reviews open in a dedicated **huicr** tab by default. For a split, set `placemen
 | `u` / `U` / `i` | Unstaged + untracked / all uncommitted / staged |
 | `b` / `t` | Branch / last agent turn |
 | `y` / `M` | Full history / hide or show merge commits in history |
-| `o` | Open a branch, commit, range, or GitHub PR URL |
+| `o` | Open a branch, commit, range, GitHub PR URL, or file/directory history |
 | `B` | Choose the comparator branch or revision |
 | `,` / `.` / `m` | Previous commit / next commit / whole-range diff |
 | `j` / `k`, `Tab` | Move / switch focus |
@@ -56,6 +56,8 @@ huicr open --no-merges path/to/file       # The same review in Herdr
 ```
 
 A bare file path (`huicr review path/to/file`) also opens history. Use `--` before paths that could be mistaken for revisions. Paths filter both commits and displayed files; **`,` / `.`** step through the results. See [history details](docs/reference.md#full-history-and-file-history).
+
+Already reviewing? Press **`o`**, enter a file or directory path relative to the repository root, and press **Enter** to open its history. Enter paths with spaces literally; use `-- path/to/file` to force a path when its name is also a revision. **`M`** toggles merge commits in the resulting history.
 
 ## Send feedback
 

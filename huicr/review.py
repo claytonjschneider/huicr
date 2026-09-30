@@ -5,11 +5,17 @@ from .git import Repo, View
 
 
 class Review:
-    def __init__(self, repo: Repo, store, scope="unstaged", base=None, target=None, origin=None):
+    def __init__(self, repo: Repo, store, scope="unstaged", base=None, target=None, origin=None, *, paths=None, no_merges=False):
         self.repo, self.store = repo, store
         self.scope, self.target = scope, target or "HEAD"
         self.base = base or store.get(str(repo.root), "base") or ""
         self.origin = origin
+        if scope != "history" and (paths or no_merges):
+            raise HuicrError("File paths and --no-merges require history scope (--history)")
+        self.paths = repo.relative_paths(paths or [])
+        self.no_merges = no_merges
+        self.history_commits = []
+        self.history_base = ""
         self.commits = []
         self.commit_index = 0
         self.whole = False
@@ -35,6 +41,16 @@ class Review:
                                   turn["start"], right, left_commit=turn["head"],
                                   right_commit=turn.get("end_head") or head,
                                   source=f"turn:{turn['id']}")
+        elif self.scope == "history":
+            match = re.fullmatch(r"(.+?)(\.{2,3})(.+)", self.target)
+            if match:
+                self.history_base, self.right = self.range_bounds(match)
+            else:
+                self.history_base = ""
+                self.right = "" if self.target == "HEAD" and not head else repo.resolve(self.target)
+            self.left = self.history_base or repo.empty()
+            self.history_commits = repo.history(self.right, self.history_base, self.paths) if self.right else []
+            self.filter_history(self.no_merges)
         elif self.scope in ("branch", "range", "pr"):
             if self.scope == "branch":
                 if not self.base:
@@ -53,12 +69,7 @@ class Review:
                     self.left = commit.parents[0] if commit.parents else repo.empty()
                     self.right, self.commits = commit.oid, [commit]
                 else:
-                    base, operator, tip = match.groups()
-                    self.left, self.right = repo.resolve(base), repo.resolve(tip)
-                    if operator == "...":
-                        self.left = repo.merge_base(self.left, self.right)
-                    elif repo.git("merge-base", "--is-ancestor", self.left, self.right, check=False).returncode:
-                        raise HuicrError("BASE..HEAD requires an ancestor base; use BASE...HEAD for divergent branches")
+                    self.left, self.right = self.range_bounds(match)
                     self.commits = repo.commits(self.left, self.right)
                 self.source = self.target
             elif not self.right:
@@ -70,13 +81,37 @@ class Review:
             raise HuicrError(f"Unknown review scope: {self.scope}")
         return self.view
 
+    def range_bounds(self, match):
+        base, operator, tip = match.groups()
+        left, right = self.repo.resolve(base), self.repo.resolve(tip)
+        if operator == "...":
+            left = self.repo.merge_base(left, right)
+        elif self.repo.git("merge-base", "--is-ancestor", left, right, check=False).returncode:
+            raise HuicrError("BASE..HEAD requires an ancestor base; use BASE...HEAD for divergent branches")
+        return left, right
+
+    def filter_history(self, no_merges):
+        selected = self.commits[self.commit_index].oid if self.commits else None
+        self.no_merges = no_merges
+        self.commits = [c for c in self.history_commits if not no_merges or len(c.parents) < 2]
+        fallback = min(self.commit_index, max(0, len(self.commits) - 1))
+        self.commit_index = next((i for i, c in enumerate(self.commits) if c.oid == selected), fallback)
+        self.source = self.target + (" (non-merge)" if no_merges else "")
+        if self.paths:
+            self.source += " -- " + ", ".join(self.paths)
+        return self.select_view()
+
     def select_view(self):
-        if self.commits and not self.whole:
-            self.view = self.repo.commit_view(self.commits[self.commit_index], self.scope, self.source)
-        else:
-            self.view = self.repo.view(self.scope, f"whole {self.scope}: {self.source}", self.left, self.right,
-                                       left_commit=self.left if self.commits and self.commits[0].parents else "",
+        if self.scope == "history" and not self.commits:
+            tree = self.right or self.left
+            self.view = self.repo.view(self.scope, f"No commits match history: {self.source}", tree, tree,
                                        right_commit=self.right, source=self.source)
+        elif self.commits and not self.whole:
+            self.view = self.repo.commit_view(self.commits[self.commit_index], self.scope, self.source, self.paths)
+        else:
+            left_commit = self.history_base if self.scope == "history" else self.left if self.commits and self.commits[0].parents else ""
+            self.view = self.repo.view(self.scope, f"whole {self.scope}: {self.source}", self.left, self.right,
+                                       left_commit=left_commit, right_commit=self.right, source=self.source, paths=self.paths)
         self.view.pr = self.pr
         return self.view
 

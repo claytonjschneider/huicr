@@ -174,7 +174,40 @@ class Repo:
         ids = self.text("rev-list", "--reverse", "--first-parent", f"{base}..{head}").splitlines()
         return [self.commit_info(oid) for oid in ids]
 
-    def changes(self, left, right):
+    def relative_paths(self, paths, cwd=None):
+        """Normalize literal paths without following a tracked file's symlink."""
+        directory = Path(cwd).resolve() if cwd is not None else self.root
+        result = []
+        for path in paths:
+            if not path or "\x00" in path:
+                raise HuicrError("Expected a nonempty file or directory path")
+            absolute = Path(os.path.abspath(directory / path))
+            try:
+                result.append(absolute.relative_to(self.root).as_posix())
+            except ValueError as e:
+                raise HuicrError(f"History path is outside this repository: {path}") from e
+        return result
+
+    def has_path(self, path):
+        # Deleted paths are valid positional arguments too.
+        return os.path.lexists(self.root / path) or bool(self.head() and self.text(
+            "log", "-1", "--format=%H", "--full-history", "HEAD", "--", path))
+
+    def history(self, head, base="", paths=()):
+        # Full ancestry keeps side-branch work even when a merge is TREESAME for
+        # the requested path. Load metadata in one process for long histories.
+        # Do not use --parents: path simplification can rewrite those parents.
+        records = self.text("log", "--topo-order", "--full-history", "--no-follow", "--no-renames",
+                            "--format=%H%x00%P%x00%s%x00%an%x00%aI",
+                            f"{base}..{head}" if base else head, "--", *paths)
+        commits = []
+        for record in records.split("\n"):
+            if record:
+                oid, parents, subject, author, date = record.split("\0")
+                commits.append(Commit(oid, parents.split(), subject, author, date))
+        return commits
+
+    def changes(self, left, right, paths=()):
         fields = self.git("diff", "--name-status", "-z", "--find-renames", left, right, "--").stdout.split(b"\0")
         files = []
         i = 0
@@ -187,17 +220,23 @@ class Repo:
                 path = os.fsdecode(fields[i])
                 i += 1
             files.append(FileChange(status, old, path))
+        if paths:
+            # Filter after rename detection so both old and new names retain
+            # their actual diff/blame anchors, rather than becoming add/delete.
+            files = [file for file in files if any(
+                wanted == "." or name == wanted or name.startswith(wanted + "/")
+                for wanted in paths for name in (file.old_path, file.path))]
         return files
 
-    def view(self, scope, label, left, right, **kwargs):
+    def view(self, scope, label, left, right, paths=(), **kwargs):
         view = View(scope, label, self.resolve(left, "tree"), self.resolve(right, "tree"), **kwargs)
-        view.files = self.changes(view.left, view.right)
+        view.files = self.changes(view.left, view.right, paths)
         return view
 
-    def commit_view(self, commit, scope="branch", source=""):
+    def commit_view(self, commit, scope="branch", source="", paths=()):
         parent = commit.parents[0] if commit.parents else ""
         return self.view(scope, f"{commit.oid[:10]} {commit.subject}", parent or self.empty(), commit.oid,
-                         left_commit=parent, right_commit=commit.oid, commit=commit.oid, source=source)
+                         left_commit=parent, right_commit=commit.oid, commit=commit.oid, source=source, paths=paths)
 
     def blob(self, tree, path, limit=2_000_000):
         spec = f"{tree}:{path}"

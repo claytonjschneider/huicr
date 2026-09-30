@@ -95,6 +95,7 @@ Publishing reviews also requires permission to comment on the PR. Fine-grained t
 | `i` | Staged | HEAD → index |
 | `b` | Branch | Merge-base with the selected comparator → branch tip |
 | `t` | Turn | Captured worktree at turn start → captured end, or current worktree while running |
+| `y` | History | Full ancestry of HEAD, including root and merged-branch commits; newest first |
 | `o` | Open | A branch, SHA, `BASE..HEAD`, `BASE...HEAD`, or GitHub PR URL/number |
 | `B` | Comparator | Any local/remote branch, tag, or revision; saved per worktree |
 
@@ -105,6 +106,28 @@ Branch/range/PR reviews start **commit-wise**. `,` and `.` step through commits;
 For an already-merged branch, huicr finds its integration edge in the comparator's first-parent history and recovers the pre-merge comparison. For merged PRs, it loads the merge revision and the original PR commits, rather than comparing with today's target tip. Merge, squash, rebase, and fast-forward PR histories are covered by tests. A bare fast-forwarded/rebased branch can lack a recoverable boundary; use its PR URL or an explicit range in that case.
 
 Reviews never check out another branch. PR objects are fetched under `refs/huicr/pr/…`. Index/worktree snapshots use an alternate index, leaving the real index intact, including staged/unstaged boundaries and split indexes. Snapshots remain frozen until you press `r`; this keeps line comments stable as the agent continues editing.
+
+### Full history and file history
+
+**`y`** opens HEAD's full history. **`M`** toggles merge commits in this scope, retaining the captured history until **`r`** refreshes it. History traverses **all parents** and lists commits newest-first in topological order (children before parents), including the individual commits brought in by merges. Each displayed diff uses the commit's **actual first parent**, even when that parent is hidden by a filter; root commits use the empty tree.
+
+Both `review` (standalone) and `open` (Herdr) accept:
+
+```sh
+huicr review --history                        # Full history from HEAD
+huicr review --history --no-merges            # Omit merge commits, retain merged-branch work
+huicr review --no-merges path/to/file         # HEAD history for a file, without merges
+huicr review path/to/file                    # File history, including merges
+huicr review --history v1.0 -- path/to/file   # File history reachable from a tag/revision
+huicr review --history 'v1.0..main' -- src/   # Limit the history range and directory
+huicr open --no-merges main -- src/a.py src/b.py
+```
+
+`--history` is shorthand for `--scope history`. `--no-merges` and positional paths imply history when no scope is supplied. The optional revision defaults to **HEAD**, independently of the branch comparator. A range follows the same `BASE..TIP` / `BASE...TIP` rules as range reviews. `default_scope = "history"` starts new reviews in history mode.
+
+Paths are **literal file or directory names**, not globs. They filter both the commit list and the changed-file list, and can name deleted files. Paths are relative to the invocation directory, or to `--repo` for standalone review; absolute paths within the repository also work. A recognized bare path opens its history. If a name is both a revision and a path, the revision wins; use `-- PATH` to force a path, including names starting with `-`. Multiple paths are combined. Directory filters include descendants. Path history includes additions, modifications, renames involving that name, and deletions; it does **not** automatically follow a file's earlier names across renames.
+
+**`,` / `.`** move to the previous/next entry (toward newer/older history). **`m`** toggles the aggregate endpoint diff: empty tree → tip for full history, or base → tip for a range, limited to the selected paths. Merge filtering affects the commit list; the aggregate diff still reflects the endpoint trees, including merged changes. An empty result is shown explicitly. The scope, target, path filters, merge setting, and selected position survive closing and reopening.
 
 ## Navigation and blame
 
@@ -192,6 +215,7 @@ Run the checkout's launcher, or install the optional console entrypoint with `pi
 /path/to/huicr/bin/huicr open feature-branch --base origin/main
 /path/to/huicr/bin/huicr open 'main..feature-branch'
 /path/to/huicr/bin/huicr open https://github.com/owner/repo/pull/123
+/path/to/huicr/bin/huicr open --no-merges -- src/example.py
 
 # Standalone in the current terminal.
 /path/to/huicr/bin/huicr review --repo /path/to/repo

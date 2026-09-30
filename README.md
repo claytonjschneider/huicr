@@ -33,6 +33,7 @@ Prefer a dedicated tab? Set `placement = "tab"` in the plugin's `config.toml`. F
 | --- | --- |
 | `u` / `U` / `i` | Unstaged + untracked / all uncommitted / staged |
 | `b` / `t` | Branch / last agent turn |
+| `y` / `M` | Full history / hide or show merge commits in history |
 | `o` | Open a branch, commit, range, or GitHub PR URL |
 | `B` | Choose the comparator branch or revision |
 | `,` / `.` / `m` | Previous commit / next commit / whole-range diff |
@@ -42,6 +43,19 @@ Prefer a dedicated tab? Set `placement = "tab"` in the plugin's `config.toml`. F
 | `r` / `?` / `q` | Refresh / all shortcuts / close |
 
 Branch, range, and PR reviews start commit-wise, using each commit's actual parent. Reviews stay frozen until you refresh, so the agent can keep editing without shifting your comment locations.
+
+### Browse history
+
+Use **`y`** for full history from HEAD, newest first, including commits from merged branches. **`M`** hides/shows merge commits. From the shell:
+
+```sh
+huicr review --history --no-merges        # All non-merge commits reachable from HEAD
+huicr review --no-merges path/to/file     # Just this file's non-merge history
+huicr review --history main -- src/      # History on main, limited to a directory
+huicr open --no-merges path/to/file       # The same review in Herdr
+```
+
+A bare file path (`huicr review path/to/file`) also opens history. Use `--` before paths that could be mistaken for revisions. Paths filter both commits and displayed files; **`,` / `.`** step through the results. See [history details](docs/reference.md#full-history-and-file-history).
 
 ## Send feedback
 

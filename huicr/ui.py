@@ -21,6 +21,7 @@ Scopes
   u  unstaged + untracked       U  all uncommitted (vs HEAD)
   i  staged                    b  branch (commits first)
   t  last agent turn           B  choose comparator / base
+  y  full history (HEAD)       M  hide / show merges in history
   o  open branch, SHA, BASE..HEAD, BASE...HEAD, or GitHub PR URL
   m  whole range / commit      , .  previous / next commit
 
@@ -386,7 +387,10 @@ class UI:
         drafts = sum(c["version"] > c["sent_version"] and not c["resolved"] for c in self.comments)
         recipient = self.origin["pane_id"] if self.origin else "A: choose agent"
         self.put(0, 0, f" huicr  {self.repo.root.name}  ·  {drafts} drafts  → {recipient}", curses.A_BOLD | self.colors.get("accent", 0))
-        self.put(1, 0, f" u unstaged  b branch  t turn  o range/PR  B base: {self.review.base or 'auto'}")
+        if self.review.scope == "history":
+            self.put(1, 0, f" y history  M merges:{'hidden' if self.review.no_merges else 'shown'}  ·  {self.review.source}")
+        else:
+            self.put(1, 0, f" u unstaged  b branch  y history  t turn  o range/PR  B base: {self.review.base or 'auto'}")
         label = self.view.label if self.view else "No review loaded — choose a scope or comparator"
         if self.review.commits:
             label = f"[{self.review.commit_index + 1}/{len(self.review.commits)}] " + label
@@ -576,12 +580,13 @@ class UI:
             return
         self.store.put(self.repo_key, "ui", {"scope": self.review.scope, "base": self.review.base,
             "target": self.review.target, "whole": self.review.whole, "commit_index": self.review.commit_index,
+            "paths": self.review.paths, "no_merges": self.review.no_merges,
             "file": self.file.path if self.file else None, "cursor": self.cursor, "cursor_row": self.cursor_row,
             "navigator": self.navigator, "wrap": self.wrap})
 
-    def switch(self, scope, target=None, base=None):
+    def switch(self, scope, target=None, base=None, paths=None, no_merges=False):
         candidate = Review(self.repo, self.store, scope, base if base is not None else self.review.base,
-                           target, self.origin)
+                           target, self.origin, paths=paths, no_merges=no_merges)
         self.busy(f"Loading {scope}…")
         candidate.load()  # a failed request leaves the previous view intact
         self.review = candidate
@@ -596,7 +601,7 @@ class UI:
 
     def move_commit(self, delta):
         if not self.review.commits:
-            raise HuicrError("Choose branch, commit range, or PR first")
+            raise HuicrError("No commits to navigate. Choose history, branch, commit range, or PR.")
         self.review.commit_index = min(max(0, self.review.commit_index + delta), len(self.review.commits) - 1)
         self.review.whole = False
         self.review.select_view()
@@ -786,8 +791,14 @@ class UI:
             self.wrap = not self.wrap
             self.cursor_row = self.top = self.horizontal = 0
             self.message = "Text wrapping on" if self.wrap else "Text wrapping off · h/l scroll horizontally"
-        elif key in ("u", "U", "i", "b", "t"):
-            self.switch({"u": "unstaged", "U": "worktree", "i": "staged", "b": "branch", "t": "turn"}[key])
+        elif key in ("u", "U", "i", "b", "t", "y"):
+            self.switch({"u": "unstaged", "U": "worktree", "i": "staged", "b": "branch", "t": "turn", "y": "history"}[key])
+        elif key == "M" and self.review.scope == "history":
+            self.review.filter_history(not self.review.no_merges)
+            self.file_index = 0
+            self.focus = "diff"
+            self.load_file()
+            self.message = "Merge commits hidden" if self.review.no_merges else "Merge commits shown"
         elif key == "B":
             refs = self.repo.refs()
             answer = self.prompt("Comparator: Git ref (examples: " + ", ".join(refs[:6]) + ")", self.review.base)
@@ -800,7 +811,7 @@ class UI:
             target = self.prompt("Open branch, commit, BASE..HEAD, BASE...HEAD, or GitHub PR URL")
             if target:
                 self.open_target(target)
-        elif key == "m" and self.review.scope in ("branch", "range", "pr"):
+        elif key == "m" and self.review.scope in ("branch", "range", "pr", "history"):
             self.review.whole = not self.review.whole
             self.review.select_view()
             self.file_index = 0
@@ -893,9 +904,10 @@ class UI:
                             if request.get("origin"):
                                 self.origin = request["origin"]
                                 self.review.origin = self.origin
-                            if any(k in request for k in ("scope", "target", "base")):
+                            if any(k in request for k in ("scope", "target", "base", "paths", "no_merges")):
                                 self.switch(request.get("scope", "branch" if request.get("base") else "unstaged"),
-                                            request.get("target"), request.get("base"))
+                                            request.get("target"), request.get("base"),
+                                            request.get("paths"), request.get("no_merges", False))
                         self.last_poll = time.monotonic()
                     self.draw()
                     self.screen.refresh()

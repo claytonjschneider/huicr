@@ -48,7 +48,7 @@ class Config:
             for key, choices in {
                 "placement": ("split", "zoomed", "tab"),
                 "direction": ("right", "down"),
-                "default_scope": ("unstaged", "worktree", "branch", "turn"),
+                "default_scope": ("unstaged", "worktree", "branch", "turn", "history"),
             }.items():
                 if getattr(config, key) not in choices:
                     raise ValueError(f"{key} must be one of {', '.join(choices)}")

@@ -18,8 +18,12 @@ def parser():
     subs = p.add_subparsers(dest="command", required=True)
     for command in ("review", "open"):
         child = subs.add_parser(command, help="review in this terminal" if command == "review" else "open a Herdr review pane (nonblocking)")
-        child.add_argument("target", nargs="?", help="branch, SHA, BASE..HEAD, BASE...HEAD, PR URL/number")
-        child.add_argument("--scope", choices=("unstaged", "worktree", "staged", "branch", "turn", "range", "pr"))
+        child.add_argument("target", nargs="?", help="branch, SHA, range, PR URL/number, or file path for history")
+        child.add_argument("paths", nargs="*", help="literal history file/directory paths; use -- to disambiguate from revisions")
+        scope = child.add_mutually_exclusive_group()
+        scope.add_argument("--scope", choices=("unstaged", "worktree", "staged", "branch", "turn", "range", "pr", "history"))
+        scope.add_argument("--history", dest="scope", action="store_const", const="history", help="browse full ancestry, newest first (default: HEAD)")
+        child.add_argument("--no-merges", action="store_true", help="hide merge commits (implies history scope)")
         child.add_argument("--base", help="comparator branch/revision")
         if command == "review":
             child.add_argument("--repo", default=os.environ.get("HUICR_REPO", "."))
@@ -52,8 +56,50 @@ def parser():
     return p
 
 
+def parse_args(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # argparse's optional target would otherwise consume the first path after
+    # --. Keep Git's explicit revision/path boundary, including deleted paths.
+    separated = argv and argv[0] in ("review", "open") and "--" in argv
+    paths = []
+    if separated:
+        boundary = argv.index("--")
+        argv, paths = argv[:boundary], argv[boundary + 1:]
+    args = parser().parse_args(argv)
+    if args.command in ("review", "open"):
+        args.paths.extend(paths)
+        args.path_separator = bool(separated)
+    return args
+
+
+def review_request(args, repo=None):
+    from .ui import detect_target
+
+    target, paths = args.target, list(args.paths)
+    cwd = args.repo if args.command == "review" else os.getcwd()
+    if target and repo and not args.path_separator and args.scope in (None, "history"):
+        # Preserve revision/PR targets; a bare existing or historical path is a
+        # shortcut for HEAD's file history. -- always forces a path interpretation.
+        is_pr = args.scope != "history" and not args.no_merges and (target.startswith("https://") or target.isdigit())
+        if not is_pr and repo.git("rev-parse", "--verify", "--quiet", "--end-of-options",
+                                  f"{target}^{{commit}}", check=False).returncode:
+            path = repo.relative_paths([target], cwd)[0]
+            if repo.has_path(path):
+                paths.insert(0, target)
+                target = None
+    scope = args.scope or ("history" if paths or args.no_merges else detect_target(target) if target else None)
+    if scope != "history" and (paths or args.no_merges):
+        raise HuicrError("File paths and --no-merges require history scope (--history)")
+    if paths:
+        if repo is None:
+            raise HuicrError("Run file history from inside the repository")
+        paths = repo.relative_paths(paths, cwd)
+    return {key: value for key, value in {"scope": scope, "target": target, "base": args.base,
+                                        "paths": paths, "no_merges": args.no_merges}.items() if value}
+
+
 def main():
-    args = parser().parse_args()
+    args = parse_args()
     store = None
     try:
         os.umask(0o077)
@@ -71,9 +117,13 @@ def main():
         elif args.command == "action":
             print(json.dumps(action(args.mode, store, config)))
         elif args.command == "open":
-            from .ui import detect_target
-            request = {key: value for key, value in {"scope": args.scope or (detect_target(args.target) if args.target else None),
-                                                     "target": args.target, "base": args.base}.items() if value}
+            repo = None
+            if args.target or args.paths:
+                try:
+                    repo = Repo(".")
+                except HuicrError:
+                    pass  # Herdr can still locate the invoking pane's repo for ref/PR reviews.
+            request = review_request(args, repo)
             print(json.dumps(action("open", store, config, request or None, focus=args.focus)))
         elif args.command == "turn":
             repo = Repo(args.repo)
@@ -105,11 +155,13 @@ def main():
                     origin = identity(pane, repo)
             request = json.loads(os.environ.get("HUICR_REQUEST", "null")) or {}
             saved = store.get(str(repo.root), "ui", {})
-            explicit = bool(args.target or args.scope or args.base or request)
-            options = request if request else vars(args) if explicit else saved
+            cli_request = review_request(args, repo)
+            explicit = bool(cli_request or request)
+            options = request or cli_request if explicit else saved
             target = options.get("target")
             scope = options.get("scope") or (detect_target(target) if target else config.default_scope)
-            review = Review(repo, store, scope, options.get("base"), target, origin)
+            review = Review(repo, store, scope, options.get("base"), target, origin,
+                            paths=options.get("paths"), no_merges=options.get("no_merges", False))
             review.whole = args.whole or (not explicit and saved.get("whole", False))
             review.commit_index = saved.get("commit_index", 0) if not explicit else 0
             launch(review, config, saved if not explicit else None)

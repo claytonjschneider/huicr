@@ -204,7 +204,13 @@ class Repo:
         for record in records.split("\n"):
             if record:
                 oid, parents, subject, author, date = record.split("\0")
-                commits.append(Commit(oid, parents.split(), subject, author, date))
+                parents = parents.split()
+                # Full traversal can emit merges with no first-parent changes
+                # to these paths. Match commit_view's rename-aware file filter
+                # after traversal so discarded side-branch work stays visible.
+                if paths and len(parents) > 1 and not self.changes(parents[0], oid, paths):
+                    continue
+                commits.append(Commit(oid, parents, subject, author, date))
         return commits
 
     def changes(self, left, right, paths=()):

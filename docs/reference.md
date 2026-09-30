@@ -129,6 +129,8 @@ huicr open --no-merges main -- src/a.py src/b.py
 
 Paths are **literal file or directory names**, not globs. They filter both the commit list and the changed-file list, and can name deleted files. Paths are relative to the invocation directory, or to `--repo` for standalone review; absolute paths within the repository also work. A recognized bare path opens its history. If a name is both a revision and a path, the revision wins; use `-- PATH` to force a path, including names starting with `-`. Multiple paths are combined. Directory filters include descendants. Path history includes additions, modifications, renames involving that name, and deletions; it does **not** automatically follow a file's earlier names across renames.
 
+With path filters, a merge appears only when its actual first-parent diff touches a requested path. History still traverses all of its parents, so side-branch changes remain visible even if the merge discarded them.
+
 **`,` / `.`** move to the previous/next entry (toward newer/older history). **`m`** toggles the aggregate endpoint diff: empty tree → tip for full history, or base → tip for a range, limited to the selected paths. Merge filtering affects the commit list; the aggregate diff still reflects the endpoint trees, including merged changes. An empty result is shown explicitly. The scope, target, path filters, merge setting, and selected position survive closing and reopening.
 
 ## Navigation and blame

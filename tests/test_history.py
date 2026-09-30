@@ -78,9 +78,42 @@ class HistoryTest(RepositoryFixture):
         feature = self.commit("discarded feature")
         self.git("switch", "main")
         self.git("merge", "--no-ff", "-s", "ours", "feature", "-m", "discard feature")
-        review = self.review("history", paths=["file.txt"], no_merges=True)
-        self.assertEqual([c.oid for c in review.commits], [feature, self.base])
-        self.assertEqual(review.view.commit, feature)
+        merge = self.repo.head()
+        review = self.review("history", paths=["file.txt"])
+        for no_merges in (False, True, False):
+            with self.subTest(no_merges=no_merges):
+                review.filter_history(no_merges)
+                self.assertEqual([c.oid for c in review.commits], [feature, self.base])
+                self.assertEqual(review.view.commit, feature)
+                self.assertEqual([f.path for f in review.view.files], ["file.txt"])
+        self.assertEqual(self.review("history").commits[0].oid, merge)
+        empty = self.review("history", target=f"{feature}..{merge}", paths=["file.txt"])
+        self.assertEqual(empty.commits, [])
+        self.assertEqual(empty.view.files, [])
+        self.assertIn("No commits match", empty.view.label)
+
+    def test_merge_path_filter_uses_first_parent_diff_for_each_requested_path(self):
+        self.git("switch", "-c", "feature")
+        self.write("file.txt", "discarded change\n")
+        self.write("src/other.txt", "retained change\n")
+        feature = self.commit("feature changes")
+        self.git("switch", "main")
+        self.git("merge", "--no-ff", "--no-commit", "feature")
+        self.git("restore", "--source=HEAD", "--staged", "--worktree", "--", "file.txt")
+        merge = self.commit("retain only other path")
+        for paths, expected in ((["file.txt"], [feature, self.base]),
+                                (["src/"], [merge, feature]),
+                                (["file.txt", "src/"], [merge, feature, self.base])):
+            with self.subTest(paths=paths):
+                review = self.review("history", paths=paths)
+                self.assertEqual([c.oid for c in review.commits], expected)
+                self.assertEqual(review.view.left_commit, self.base)
+                if merge in expected:
+                    self.assertEqual(review.commits[0].parents, [self.base, feature])
+                    self.assertEqual([f.path for f in review.view.files], ["src/other.txt"])
+                for index in range(len(review.commits)):
+                    review.commit_index = index
+                    self.assertTrue(review.select_view().files)
 
     def test_paths_include_rename_and_deletion_with_original_anchors(self):
         self.git("mv", "file.txt", "renamed π.txt")

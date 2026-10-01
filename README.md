@@ -25,7 +25,7 @@ command = "claytonjschneider.huicr.toggle"
 description = "huicr: toggle review"
 ```
 
-Prefer a dedicated tab? Set `placement = "tab"` in the plugin's `config.toml`. Find its directory with `herdr plugin config-dir claytonjschneider.huicr`; see the [example config](config.toml.example).
+Reviews open in a dedicated **huicr** tab by default. For a split, set `placement = "split"` in the plugin's `config.toml`. Find its directory with `herdr plugin config-dir claytonjschneider.huicr`; see the [example config](config.toml.example).
 
 ## Review
 
@@ -33,7 +33,8 @@ Prefer a dedicated tab? Set `placement = "tab"` in the plugin's `config.toml`. F
 | --- | --- |
 | `u` / `U` / `i` | Unstaged + untracked / all uncommitted / staged |
 | `b` / `t` | Branch / last agent turn |
-| `o` | Open a branch, commit, range, or GitHub PR URL |
+| `y` / `M` | Full history / hide or show merge commits in history |
+| `o` | Open a branch, commit, range, GitHub PR URL, or file/directory history |
 | `B` | Choose the comparator branch or revision |
 | `,` / `.` / `m` | Previous commit / next commit / whole-range diff |
 | `j` / `k`, `Tab` | Move / switch focus |
@@ -42,6 +43,21 @@ Prefer a dedicated tab? Set `placement = "tab"` in the plugin's `config.toml`. F
 | `r` / `?` / `q` | Refresh / all shortcuts / close |
 
 Branch, range, and PR reviews start commit-wise, using each commit's actual parent. Reviews stay frozen until you refresh, so the agent can keep editing without shifting your comment locations.
+
+### Browse history
+
+Use **`y`** for full history from HEAD, newest first, including commits from merged branches. **`M`** hides/shows merge commits. From the shell:
+
+```sh
+huicr review --history --no-merges        # All non-merge commits reachable from HEAD
+huicr review --no-merges path/to/file     # Just this file's non-merge history
+huicr review --history main -- src/      # History on main, limited to a directory
+huicr open --no-merges path/to/file       # The same review in Herdr
+```
+
+A bare file path (`huicr review path/to/file`) also opens history. Use `--` before paths that could be mistaken for revisions. Paths filter both commits and displayed files; **`,` / `.`** step through the results. See [history details](docs/reference.md#full-history-and-file-history).
+
+Already reviewing? Press **`o`**, enter a file or directory path relative to the repository root, and press **Enter** to open its history. Enter paths with spaces literally; use `-- path/to/file` to force a path when its name is also a revision. **`M`** toggles merge commits in the resulting history.
 
 ## Send feedback
 

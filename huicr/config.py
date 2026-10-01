@@ -26,7 +26,7 @@ def config_path() -> Path:
 
 @dataclass
 class Config:
-    placement: str = "split"
+    placement: str = "tab"
     direction: str = "right"
     default_scope: str = "unstaged"
     context_lines: int = 5
@@ -48,7 +48,7 @@ class Config:
             for key, choices in {
                 "placement": ("split", "zoomed", "tab"),
                 "direction": ("right", "down"),
-                "default_scope": ("unstaged", "worktree", "branch", "turn"),
+                "default_scope": ("unstaged", "worktree", "branch", "turn", "history"),
             }.items():
                 if getattr(config, key) not in choices:
                     raise ValueError(f"{key} must be one of {', '.join(choices)}")
